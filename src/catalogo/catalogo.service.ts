@@ -89,23 +89,17 @@ export class CatalogoService implements OnModuleInit {
       const psu = rawBuild.psu_id || rawBuild.psuId || '';
       const cant = Number(rawBuild.ram_cantidad ?? rawBuild.ramCantidad ?? 1);
 
-      const buildPayload: any = {
+      const buildPayload: BuildRequest = {
         cpu_id: cpu,
-        cpuId: cpu,
         motherboard_id: mb,
-        motherboardId: mb,
         ram_id: ram,
-        ramId: ram,
         gpu_id: gpu,
-        gpuId: gpu,
         psu_id: psu,
-        psuId: psu,
         ram_cantidad: cant,
-        ramCantidad: cant,
       };
 
       const response = await firstValueFrom(
-        this.catalogoClient.verificarCompatibilidad({ build: buildPayload } as any),
+        this.catalogoClient.verificarCompatibilidad({ build: buildPayload }),
       );
       return {
         compatible: response.compatible,

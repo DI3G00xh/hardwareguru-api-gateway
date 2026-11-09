@@ -1,126 +1,310 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# HardwareGuru - API Gateway & BFF
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API Gateway y Backend-For-Frontend (BFF) desarrollado con **NestJS** para el ecosistema **HardwareGuru**. Actúa como el punto de entrada unificado para el cliente Frontend (React), orquestando las llamadas a los microservicios del backend mediante **gRPC** y **HTTP**, aplicando validación, observabilidad y transformación de datos.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## 1. Arquitectura del Sistema
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```text
++-------------------------------------------------------------+
+|                      Frontend (React)                       |
++------------------------------+------------------------------+
+                               |
+                               | HTTP / REST (JSON)
+                               | - Prefijo global: /api
+                               | - CORS habilitado
+                               v
++-------------------------------------------------------------+
+|                  API Gateway / BFF (NestJS)                 |
+|  - Deserialización nativa de JSON (specs y benchmarks)      |
+|  - Validación de DTOs (ValidationPipe + class-validator)    |
+|  - Normalización camelCase <-> snake_case                   |
+|  - Mapeo de errores gRPC a excepciones HTTP (400, 404, 500) |
+|  - Telemetría y tracing con NestJS Observe                  |
++------------------------------+------------------------------+
+                               |
+                               | gRPC sobre HTTP/2 (Puerto :50051)
+                               | Contrato: hardware.proto
+                               v
++-------------------------------------------------------------+
+|             Microservicio de Catálogo (Go 1.22+)            |
+|  - Servicio gRPC: CatalogoService                           |
+|  - Base de Datos: PostgreSQL                                |
+|  - Validación de reglas de compatibilidad de hardware       |
++-------------------------------------------------------------+
 ```
 
-## Compile and run the project
+---
 
-```bash
-# development
-$ npm run start
+## 2. Estructura del Proyecto
 
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+```text
+hardwareguru-api-gateway/
+├── src/
+│   ├── catalogo/                       # Módulo del Microservicio de Catálogo (Integrado)
+│   │   ├── dto/
+│   │   │   └── build.dto.ts            # DTO de validación para verificación de compatibilidad
+│   │   ├── interfaces/
+│   │   │   └── catalogo.interface.ts   # Contratos TypeScript y tipos del cliente gRPC
+│   │   ├── proto/
+│   │   │   └── hardware.proto          # Definición Protocol Buffers del servicio de catálogo
+│   │   ├── catalogo.controller.ts      # Controlador REST (/api/componentes y /api/compatibilidad)
+│   │   ├── catalogo.service.ts         # Cliente gRPC, deserialización JSON y mapeo de errores
+│   │   ├── catalogo.module.ts          # Configuración del cliente gRPC (@nestjs/microservices)
+│   │   ├── catalogo.controller.spec.ts # Pruebas unitarias del controlador
+│   │   └── catalogo.service.spec.ts    # Pruebas unitarias del servicio
+│   ├── common/
+│   │   └── proto/
+│   │       └── hardware.proto          # Contratos Protobuf compartidos
+│   ├── simulador/                      # Módulo preparado para microservicio de simulación
+│   ├── alerts/                         # Módulo preparado para microservicio de alertas
+│   ├── chat/                           # Módulo preparado para microservicio de chat / IA
+│   ├── kafka/                          # Módulo preparado para mensajería asíncrona Kafka
+│   ├── app.module.ts                   # Módulo raíz (ConfigModule, ObserveModule, etc.)
+│   └── main.ts                         # Bootstrap (Prefijo /api, CORS, ValidationPipe, Tracing)
+├── test/                               # Pruebas End-to-End (e2e)
+│   ├── app.e2e-spec.ts
+│   └── jest-e2e.json
+├── nest-cli.json                       # Copia automática de assets .proto a dist/
+├── tsconfig.json                       # Configuración de TypeScript
+└── .env.example                        # Plantilla de variables de entorno
 ```
 
-## Run tests
+---
+
+## 3. Puesta en Marcha
+
+### Requisitos Previos
+- **Node.js**: v20.19+ o v22.12+ (soporte nativo ESM)
+- **npm**: v10+
+- **Microservicio de Catálogo en ejecución**: Servicio Go levantado en el puerto `50051` (vía `docker compose up -d` en `hardwareguru-catalogo`).
+
+### Paso 1: Configurar Variables de Entorno
+Copia el archivo de plantilla `.env.example` a `.env`:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+cp .env.example .env
 ```
 
-## Deployment
+Configuración requerida en `.env`:
+```env
+PORT=3000
+NODE_ENV=development
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+# Clientes gRPC
+CATALOGO_GRPC_URL=localhost:50051
+SIMULADOR_GRPC_URL=localhost:50052
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+# Kafka
+KAFKA_BROKERS=localhost:9092
+KAFKA_CLIENT_ID=api-gateway-producer
+
+# Microservicios HTTP
+ALERTS_SERVICE_URL=http://localhost:5001
+MCP_SERVICE_URL=http://localhost:3001
+```
+
+### Paso 2: Instalar Dependencias
+```bash
+npm install
+```
+
+### Paso 3: Ejecutar la Aplicación
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+# Modo desarrollo con recarga automática
+npm run start:dev
+
+# Modo producción
+npm run build
+npm run start:prod
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+El servidor iniciará en: **`http://localhost:3000/api`**.
 
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-This project is already instrumented. To connect it, run this and approve the code it prints at [observe.nestjs.com/link](https://observe.nestjs.com/link) - signing up for free if you have no account:
+### Paso 4: Ejecutar Pruebas y Linter
 
 ```bash
-$ npx @nestjs/observe link
+# Pruebas unitarias
+npm test
+
+# Pruebas End-to-End (e2e)
+npm run test:e2e
+
+# Linter de código
+npm run lint
 ```
 
-It writes the app key and secret into `.env` and makes every `nest start` script (`start`, `start:dev`, `start:debug`) load it. In production, set `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment instead.
+---
 
-Or do it by hand: create an application and an API key at [observe.nestjs.com](https://observe.nestjs.com), and set the pair as `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment the app runs in.
+## 4. Contratos de Integración para el Frontend (Módulo Catálogo)
 
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
+> **Prefijo Base de la API:** `http://localhost:3000/api`  
+> **CORS:** Habilitado para todos los orígenes (`*`).  
+> **Headers requeridos en peticiones POST:** `Content-Type: application/json`
 
-## Resources
+---
 
-Check out a few resources that may come in handy when working with NestJS:
+### 4.1. Listar Componentes
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+Retorna un listado resumido de componentes disponibles. Permite filtrar opcionalmente por tipo de componente.
 
-## Support
+- **Método:** `GET`
+- **Ruta:** `/api/componentes`
+- **Query Params (opcional):**
+  - `tipo`: Tipo de hardware a filtrar (`cpu`, `placa`, `ram`, `gpu`, `fuente`). Si se omite, retorna todos los componentes.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+#### Ejemplo de Solicitud:
+```http
+GET /api/componentes?tipo=cpu HTTP/1.1
+Host: localhost:3000
+```
 
-## Stay in touch
+#### Ejemplo de Respuesta (`200 OK`):
+```json
+[
+  {
+    "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+    "tipo": "cpu",
+    "nombre": "AMD Ryzen 5 5600X",
+    "fabricante": "AMD",
+    "tdp": 65,
+    "socket": "AM4",
+    "tipo_ram": "DDR4",
+    "potencia_w": 65,
+    "origen": "catalogo"
+  },
+  {
+    "id": "b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e",
+    "tipo": "cpu",
+    "nombre": "Intel Core i5-13600K",
+    "fabricante": "Intel",
+    "tdp": 125,
+    "socket": "LGA1700",
+    "tipo_ram": "DDR5",
+    "potencia_w": 181,
+    "origen": "catalogo"
+  }
+]
+```
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+---
 
-## License
+### 4.2. Obtener Detalle y Especificaciones de un Componente
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Obtiene el detalle completo de un componente por su identificador único.
+
+> **Importante para el Frontend:**  
+> A diferencia de la comunicación gRPC interna que transporta strings serializados, el API Gateway **deserializa automáticamente** los campos `especificaciones_json` y `benchmarks_json` entregando objetos JavaScript/JSON nativos (`especificaciones` y `benchmarks`).
+
+- **Método:** `GET`
+- **Ruta:** `/api/componentes/:id`
+
+#### Ejemplo de Solicitud:
+```http
+GET /api/componentes/a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d HTTP/1.1
+Host: localhost:3000
+```
+
+#### Ejemplo de Respuesta (`200 OK`):
+```json
+{
+  "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "tipo": "cpu",
+  "nombre": "AMD Ryzen 5 5600X",
+  "fabricante": "AMD",
+  "tdp": 65,
+  "socket": "AM4",
+  "tipoRam": "DDR4",
+  "potenciaW": 65,
+  "origen": "catalogo",
+  "especificaciones": {
+    "nucleos": 6,
+    "hilos": 12,
+    "frecuencia_base_ghz": 3.7,
+    "frecuencia_turbo_ghz": 4.6,
+    "cache_l3_mb": 32,
+    "litografia_nm": 7
+  },
+  "benchmarks": {
+    "cinebench_r23_single": 1500,
+    "cinebench_r23_multi": 11200,
+    "passmark_cpu": 22100
+  }
+}
+```
+
+#### Posibles Respuestas de Error:
+- `404 Not Found`: Si el ID no existe en la base de datos.
+  ```json
+  {
+    "statusCode": 404,
+    "message": "componente no encontrado con ID: '...'",
+    "error": "Not Found"
+  }
+  ```
+
+---
+
+### 4.3. Verificar Compatibilidad de un Build
+
+Evalúa una combinación de componentes según las reglas de negocio del microservicio (compatibilidad de socket CPU-Placa, estándar de memoria RAM, potencia suficiente de la fuente, etc.).
+
+- **Método:** `POST`
+- **Rutas Disponibles:**
+  - `/api/componentes/compatibilidad` *(Ruta principal)*
+  - `/api/compatibilidad` *(Alias directo)*
+- **Body:** Admite tanto notación `camelCase` como `snake_case`.
+
+#### Campos del Body:
+| Campo (`camelCase`) | Campo (`snake_case`) | Tipo | Requerido | Descripción |
+| :--- | :--- | :--- | :---: | :--- |
+| `cpuId` | `cpu_id` | string | Sí | ID del procesador |
+| `motherboardId` | `motherboard_id` | string | Sí | ID de la placa madre |
+| `ramId` | `ram_id` | string | Sí | ID del módulo de memoria RAM |
+| `gpuId` | `gpu_id` | string | No | ID de la tarjeta gráfica (opcional) |
+| `psuId` | `psu_id` | string | Sí | ID de la fuente de poder |
+| `ramCantidad` | `ram_cantidad` | number | No | Cantidad de módulos RAM (defecto: `1`) |
+
+#### Ejemplo de Solicitud (Build Compatible):
+```http
+POST /api/componentes/compatibilidad HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+
+{
+  "cpuId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "motherboardId": "c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e8f",
+  "ramId": "d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a",
+  "gpuId": "e5f6a7b8-c9d0-1e2f-3a4b-5c6d7e8f9a0b",
+  "psuId": "f6a7b8c9-d0e1-2f3a-4b5c-6d7e8f9a0b1c",
+  "ramCantidad": 2
+}
+```
+
+#### Respuesta Compatible (`200 OK`):
+```json
+{
+  "compatible": true,
+  "errores": [],
+  "consumoEstimadoW": 420
+}
+```
+
+#### Respuesta con Incompatibilidades (`200 OK`):
+Si los componentes no son compatibles físicamente o eléctricamente, `compatible` será `false` y `errores` detallará las causas:
+```json
+{
+  "compatible": false,
+  "errores": [
+    "Incompatibilidad de socket: la CPU requiere socket AM4 pero la placa madre tiene socket LGA1700",
+    "Incompatibilidad de memoria RAM: la placa madre usa DDR5 pero el módulo seleccionado es DDR4"
+  ],
+  "consumoEstimadoW": 550
+}
+```
+
+---
+
+
