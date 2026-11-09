@@ -82,17 +82,30 @@ export class CatalogoService implements OnModuleInit {
   async verificarCompatibilidad(build: BuildRequest) {
     try {
       const rawBuild = (build as any)?.build ?? build;
-      const buildPayload: BuildRequest = {
-        cpu_id: rawBuild.cpu_id || rawBuild.cpuId || '',
-        motherboard_id: rawBuild.motherboard_id || rawBuild.motherboardId || '',
-        ram_id: rawBuild.ram_id || rawBuild.ramId || '',
-        gpu_id: rawBuild.gpu_id || rawBuild.gpuId || '',
-        psu_id: rawBuild.psu_id || rawBuild.psuId || '',
-        ram_cantidad: Number(rawBuild.ram_cantidad ?? rawBuild.ramCantidad ?? 1),
+      const cpu = rawBuild.cpu_id || rawBuild.cpuId || '';
+      const mb = rawBuild.motherboard_id || rawBuild.motherboardId || '';
+      const ram = rawBuild.ram_id || rawBuild.ramId || '';
+      const gpu = rawBuild.gpu_id || rawBuild.gpuId || '';
+      const psu = rawBuild.psu_id || rawBuild.psuId || '';
+      const cant = Number(rawBuild.ram_cantidad ?? rawBuild.ramCantidad ?? 1);
+
+      const buildPayload: any = {
+        cpu_id: cpu,
+        cpuId: cpu,
+        motherboard_id: mb,
+        motherboardId: mb,
+        ram_id: ram,
+        ramId: ram,
+        gpu_id: gpu,
+        gpuId: gpu,
+        psu_id: psu,
+        psuId: psu,
+        ram_cantidad: cant,
+        ramCantidad: cant,
       };
 
       const response = await firstValueFrom(
-        this.catalogoClient.verificarCompatibilidad({ build: buildPayload }),
+        this.catalogoClient.verificarCompatibilidad({ build: buildPayload } as any),
       );
       return {
         compatible: response.compatible,

@@ -6,11 +6,16 @@ import { CatalogoController, CompatibilidadController } from './catalogo.control
 import { CatalogoService } from './catalogo.service';
 
 const getProtoPath = () => {
-  const localProto = join(__dirname, 'proto/hardware.proto');
+  const baseDir =
+    typeof __dirname !== 'undefined'
+      ? __dirname
+      : join(process.cwd(), 'src/catalogo');
+
+  const localProto = join(baseDir, 'proto/hardware.proto');
   if (existsSync(localProto)) {
     return localProto;
   }
-  return join(__dirname, '../common/proto/hardware.proto');
+  return join(baseDir, '../common/proto/hardware.proto');
 };
 
 @Module({
@@ -23,6 +28,9 @@ const getProtoPath = () => {
           package: 'hardware',
           protoPath: getProtoPath(),
           url: process.env.CATALOGO_GRPC_URL || 'localhost:50051',
+          loader: {
+            keepCase: true,
+          },
         },
       },
     ]),
@@ -31,4 +39,4 @@ const getProtoPath = () => {
   providers: [CatalogoService],
   exports: [CatalogoService],
 })
-export class CatalogoModule {}
+export class CatalogoModule { }
