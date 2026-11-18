@@ -7,32 +7,33 @@ API Gateway y Backend-For-Frontend (BFF) desarrollado con **NestJS** para el eco
 ## 1. Arquitectura del Sistema
 
 ```text
-+-------------------------------------------------------------+
-|                      Frontend (React)                       |
-+------------------------------+------------------------------+
-                               |
-                               | HTTP / REST (JSON)
-                               | - Prefijo global: /api
-                               | - CORS habilitado
-                               v
-+-------------------------------------------------------------+
-|                  API Gateway / BFF (NestJS)                 |
-|  - Deserialización nativa de JSON (specs y benchmarks)      |
-|  - Validación de DTOs (ValidationPipe + class-validator)    |
-|  - Normalización camelCase <-> snake_case                   |
-|  - Mapeo de errores gRPC a excepciones HTTP (400, 404, 500) |
-|  - Telemetría y tracing con NestJS Observe                  |
-+------------------------------+------------------------------+
-                               |
-                               | gRPC sobre HTTP/2 (Puerto :50051)
-                               | Contrato: hardware.proto
-                               v
-+-------------------------------------------------------------+
-|             Microservicio de Catálogo (Go 1.22+)            |
-|  - Servicio gRPC: CatalogoService                           |
-|  - Base de Datos: PostgreSQL                                |
-|  - Validación de reglas de compatibilidad de hardware       |
-+-------------------------------------------------------------+
++-----------------------------------------------------------------------+
+|                           Frontend (React)                            |
++-----------------------------------+-----------------------------------+
+                                    |
+                                    | HTTP / REST (JSON)
+                                    | - Prefijo global: /api
+                                    | - CORS habilitado
+                                    v
++-----------------------------------------------------------------------+
+|                       API Gateway / BFF (NestJS)                      |
+|  - Deserialización nativa de JSON (specs y benchmarks)                |
+|  - Validación de DTOs (ValidationPipe + class-validator)              |
+|  - Normalización camelCase <-> snake_case                             |
+|  - Orquestación IDs -> métricas vía Catálogo antes de simular         |
+|  - Deadlines gRPC (3000 ms) y mapeo a HTTP (400, 404, 501-504)        |
+|  - Telemetría y tracing con NestJS Observe                            |
++------------------+---------------------------------+------------------+
+                   |                                 |
+                   | gRPC (:50051)                   | gRPC (:9090)
+                   | Contrato: hardware.proto        | Contrato: simulator.proto
+                   v                                 v
++----------------------------------+  +----------------------------------+
+|  Microservicio Catálogo (Go)     |  |  Microservicio Simulador (Java)  |
+|  - Servicio: CatalogoService     |  |  - Servicio: SimulatorService    |
+|  - Base de Datos: PostgreSQL     |  |  - Base de Datos: PostgreSQL     |
+|  - Reglas de compatibilidad      |  |  - Consumo, cuello de botella    |
++----------------------------------+  +----------------------------------+
 ```
 
 ---
@@ -54,10 +55,22 @@ hardwareguru-api-gateway/
 │   │   ├── catalogo.module.ts          # Configuración del cliente gRPC (@nestjs/microservices)
 │   │   ├── catalogo.controller.spec.ts # Pruebas unitarias del controlador
 │   │   └── catalogo.service.spec.ts    # Pruebas unitarias del servicio
+│   ├── simulador/                      # Módulo del Microservicio Simulador (Integrado)
+│   │   ├── dto/
+│   │   │   └── simular.dto.ts          # DTOs de simulación (métricas directas o IDs) y GuardarBuild
+│   │   ├── interfaces/
+│   │   │   └── simulador.interface.ts  # Contratos TypeScript y tipos del cliente gRPC
+│   │   ├── proto/
+│   │   │   └── simulator.proto         # Definición Protocol Buffers del servicio simulador
+│   │   ├── simulador.controller.ts     # Controladores (/api/simulador, /api/simulaciones, /api/simular)
+│   │   ├── simulador.service.ts        # Cliente gRPC (deadline 3s), orquestación y mapeo de errores
+│   │   ├── simulador.module.ts         # Configuración del cliente gRPC e importación de CatalogoModule
+│   │   ├── simulador.controller.spec.ts# Pruebas unitarias del controlador
+│   │   └── simulador.service.spec.ts   # Pruebas unitarias del servicio
 │   ├── common/
 │   │   └── proto/
-│   │       └── hardware.proto          # Contratos Protobuf compartidos
-│   ├── simulador/                      # Módulo preparado para microservicio de simulación
+│   │       ├── hardware.proto          # Contrato Protobuf compartido de catálogo
+│   │       └── simulator.proto         # Contrato Protobuf compartido de simulador
 │   ├── alerts/                         # Módulo preparado para microservicio de alertas
 │   ├── chat/                           # Módulo preparado para microservicio de chat / IA
 │   ├── kafka/                          # Módulo preparado para mensajería asíncrona Kafka
@@ -79,6 +92,7 @@ hardwareguru-api-gateway/
 - **Node.js**: v20.19+ o v22.12+ (soporte nativo ESM)
 - **npm**: v10+
 - **Microservicio de Catálogo en ejecución**: Servicio Go levantado en el puerto `50051` (vía `docker compose up -d` en `hardwareguru-catalogo`).
+- **Microservicio Simulador en ejecución**: Servicio Spring Boot gRPC levantado en el puerto `9090` (`hardwareguru-simulador` / `SimulatorService`).
 
 ### Paso 1: Configurar Variables de Entorno
 Copia el archivo de plantilla `.env.example` a `.env`:
@@ -94,7 +108,7 @@ NODE_ENV=development
 
 # Clientes gRPC
 CATALOGO_GRPC_URL=localhost:50051
-SIMULADOR_GRPC_URL=localhost:50052
+SIMULADOR_GRPC_URL=localhost:9090
 
 # Kafka
 KAFKA_BROKERS=localhost:9092
@@ -306,5 +320,126 @@ Si los componentes no son compatibles físicamente o eléctricamente, `compatibl
 ```
 
 ---
+
+## 5. Contratos de Integración (Módulo Simulador)
+
+El módulo `SimuladorModule` se conecta por **gRPC** al microservicio Java (`SimulatorService` en el puerto `9090`, contrato `simulator.proto`) aplicando un **deadline/timeout de `3000 ms`**, validaciones defensivas previas y orquestación automática con `CatalogoService` cuando se envían IDs de componentes en lugar de métricas numéricas.
+
+---
+
+### 5.1. Simular Rendimiento (API / Orquestación)
+
+Calcula el consumo estimado total, porcentaje de cuello de botella y estado de riesgo de una configuración.
+
+- **Método:** `POST`
+- **Rutas Disponibles:**
+  - `/api/simulador/calcular` *(Ruta principal)*
+  - `/api/simulaciones` *(Alias REST)*
+  - `/api/simulador` *(Alias directo)*
+- **Modos de entrada admitidos (en `camelCase` o `snake_case`):**
+  1. **Métricas directas:** `cpuTdpWatts`, `cpuBenchmarkScore` (`> 0`), `gpuTdpWatts`, `gpuBenchmarkScore` (`> 0`), `psuWatts` (`> 0`), `resolucion`.
+  2. **Orquestación por IDs:** `cpuId`, `gpuId`, `psuId` (o `fuenteId`), `resolucion`. El Gateway consulta en paralelo a `CatalogoService` (`obtenerSpecs`) para resolver TDP, potencia y puntajes de benchmark (`passmark_*`, `timespy`, `cinebench_r23_multi` o `cinebenchR24`) antes de invocar al simulador.
+- **Identificación de usuario (`userId`):** Si existe sesión autenticada (`req.user`) o header `x-user-id`, se utiliza ese ID; en caso contrario toma `userId`/`user_id` del body o `"0"` (modo invitado, sin persistencia en PostgreSQL del simulador).
+
+#### Ejemplo de Solicitud con Métricas Directas:
+```http
+POST /api/simulador/calcular HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+
+{
+  "userId": "user-123",
+  "cpuTdpWatts": 125,
+  "cpuBenchmarkScore": 28000,
+  "gpuTdpWatts": 220,
+  "gpuBenchmarkScore": 25000,
+  "psuWatts": 750,
+  "resolucion": "1440p"
+}
+```
+
+#### Ejemplo de Solicitud por IDs (Orquestada con Catálogo):
+```http
+POST /api/simulaciones HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+
+{
+  "cpuId": "cpu-9600x",
+  "gpuId": "gpu-4060",
+  "fuenteId": "psu-650",
+  "resolucion": "1080p"
+}
+```
+
+#### Respuesta (`200 OK`):
+```json
+{
+  "consumoTotalWatts": 395,
+  "cuelloBotellaPorcentaje": 0,
+  "estado": "Óptimo",
+  "motivo": "Tu sistema está perfectamente balanceado."
+}
+```
+
+---
+
+### 5.2. Simular Build para el Frontend (`POST /api/simular`)
+
+Endpoint BFF adaptado al contrato del cliente React (`hardwareguru-frontend`). Si se envían los componentes completos (`cpuId`, `placaId`/`motherboardId`, `ramId`, `gpuId`, `fuenteId`/`psuId`), verifica primero la compatibilidad física/eléctrica en `CatalogoService` y luego ejecuta la simulación en `SimulatorService`.
+
+- **Método:** `POST`
+- **Ruta:** `/api/simular`
+
+#### Ejemplo de Solicitud:
+```json
+{
+  "cpuId": "cpu-9600x",
+  "placaId": "mb-b650",
+  "ramId": "ram-ddr5-16",
+  "gpuId": "gpu-4060",
+  "fuenteId": "psu-650",
+  "resolucion": "1080p"
+}
+```
+
+#### Respuesta (`200 OK`):
+```json
+{
+  "consumoEstimadoW": 230,
+  "cuelloBotellaPct": 0,
+  "resolucion": "1080p",
+  "estado": "BALANCEADO",
+  "motivo": null
+}
+```
+> Valores posibles de `estado`: `"BALANCEADO"`, `"RIESGO"` (cuando el simulador reporta `"Desbalanceado"` o `"Riesgo Crítico"`) o `"INCOMPATIBLE"` (cuando falla la validación de compatibilidad en Catálogo).
+
+---
+
+### 5.3. Guardar Build (`POST /api/simulador/builds`)
+
+Expone el RPC `GuardarBuild` definido en `simulator.proto`.
+
+- **Método:** `POST`
+- **Ruta:** `/api/simulador/builds`
+- **Estado actual en el microservicio Simulador:** El RPC `GuardarBuild` está declarado en `simulator.proto` pero pendiente de implementación en `SimulatorServiceImpl`, por lo que al invocarlo actualmente el Gateway responderá `501 Not Implemented` (mapeado desde gRPC `UNIMPLEMENTED`).
+
+---
+
+### 5.4. Mapeo de Errores gRPC a HTTP (Simulador)
+
+| Código gRPC | Significado | Respuesta HTTP en Gateway |
+| :--- | :--- | :--- |
+| `OK (0)` | Simulación exitosa | `200 OK` |
+| `INVALID_ARGUMENT (3)` | Datos inválidos (o validación previa en DTO/servicio) | `400 Bad Request` |
+| `DEADLINE_EXCEEDED (4)` | Timeout al simular (`> 3000 ms`) | `504 Gateway Timeout` |
+| `NOT_FOUND (5)` | Recurso no encontrado | `404 Not Found` |
+| `UNIMPLEMENTED (12)` | RPC no implementado (ej. `GuardarBuild`) | `501 Not Implemented` |
+| `UNAVAILABLE (14)` | Microservicio simulador apagado o inaccesible | `503 Service Unavailable` |
+| `INTERNAL (13)` / `UNKNOWN (2)` | Error interno en el simulador | `502 Bad Gateway` |
+
+---
+
 
 
