@@ -7,33 +7,34 @@ API Gateway y Backend-For-Frontend (BFF) desarrollado con **NestJS** para el eco
 ## 1. Arquitectura del Sistema
 
 ```text
-+-----------------------------------------------------------------------+
-|                           Frontend (React)                            |
-+-----------------------------------+-----------------------------------+
-                                    |
-                                    | HTTP / REST (JSON)
-                                    | - Prefijo global: /api
-                                    | - CORS habilitado
-                                    v
-+-----------------------------------------------------------------------+
-|                       API Gateway / BFF (NestJS)                      |
-|  - Deserialización nativa de JSON (specs y benchmarks)                |
-|  - Validación de DTOs (ValidationPipe + class-validator)              |
-|  - Normalización camelCase <-> snake_case                             |
-|  - Orquestación IDs -> métricas vía Catálogo antes de simular         |
-|  - Deadlines gRPC (3000 ms) y mapeo a HTTP (400, 404, 501-504)        |
-|  - Telemetría y tracing con NestJS Observe                            |
-+------------------+---------------------------------+------------------+
-                   |                                 |
-                   | gRPC (:50051)                   | gRPC (:9090)
-                   | Contrato: hardware.proto        | Contrato: simulator.proto
-                   v                                 v
-+----------------------------------+  +----------------------------------+
-|  Microservicio Catálogo (Go)     |  |  Microservicio Simulador (Java)  |
-|  - Servicio: CatalogoService     |  |  - Servicio: SimulatorService    |
-|  - Base de Datos: PostgreSQL     |  |  - Base de Datos: PostgreSQL     |
-|  - Reglas de compatibilidad      |  |  - Consumo, cuello de botella    |
-+----------------------------------+  +----------------------------------+
++---------------------------------------------------------------------------------------------------+
+|                                         Frontend (React)                                          |
++-------------------------------------------------+-------------------------------------------------+
+                                                  |
+                                                  | HTTP / REST (JSON)
+                                                  | - Prefijo global: /api
+                                                  | - CORS habilitado
+                                                  v
++---------------------------------------------------------------------------------------------------+
+|                                     API Gateway / BFF (NestJS)                                    |
+|  - Deserialización nativa de JSON (specs y benchmarks)                                            |
+|  - Validación de DTOs (ValidationPipe + class-validator)                                          |
+|  - Normalización camelCase <-> snake_case                                                         |
+|  - Orquestación IDs -> métricas vía Catálogo antes de simular                                     |
+|  - Proxy HTTP hacia MCP Server con inyección de x-user-id y timeout amplio (45s)                  |
+|  - Deadlines gRPC (3000 ms) y mapeo de errores (400, 401, 404, 501-504)                           |
+|  - Telemetría y tracing con NestJS Observe                                                        |
++-------------------+-----------------------------+-------------------------------+-----------------+
+                    |                             |                               |
+                    | gRPC (:50051)               | gRPC (:9090)                  | HTTP (:3001)
+                    | hardware.proto              | simulator.proto               | POST /chat + x-user-id
+                    v                             v                               v
++----------------------------------+  +----------------------------------+  +----------------------------------+
+|  Microservicio Catálogo (Go)     |  |  Microservicio Simulador (Java)  |  |  MCP Server / IA (Node.js)       |
+|  - Servicio: CatalogoService     |  |  - Servicio: SimulatorService    |  |  - Gemini + Tool Calling gRPC    |
+|  - Base de Datos: PostgreSQL     |  |  - Base de Datos: PostgreSQL     |  |  - Llama a Simulador (:9090)     |
+|  - Reglas de compatibilidad      |  |  - Consumo, cuello de botella    |  |  - Redacción de respuestas       |
++----------------------------------+  +----------------------------------+  +----------------------------------+
 ```
 
 ---
@@ -67,12 +68,21 @@ hardwareguru-api-gateway/
 │   │   ├── simulador.module.ts         # Configuración del cliente gRPC e importación de CatalogoModule
 │   │   ├── simulador.controller.spec.ts# Pruebas unitarias del controlador
 │   │   └── simulador.service.spec.ts   # Pruebas unitarias del servicio
+│   ├── chat/                           # Módulo del Microservicio MCP Server / IA (Integrado)
+│   │   ├── dto/
+│   │   │   └── chat.dto.ts             # DTO de entrada (prompt directo o mensaje + historial)
+│   │   ├── interfaces/
+│   │   │   └── chat.interface.ts       # Contratos HTTP de entrada/salida hacia MCP Server
+│   │   ├── chat.controller.ts          # Controlador REST (/api/chat) e inyección de x-user-id
+│   │   ├── chat.service.ts             # Cliente HTTP (@nestjs/axios, timeout 45s) y mapeo de errores
+│   │   ├── chat.module.ts              # Configuración de HttpModule (MCP_TIMEOUT_MS)
+│   │   ├── chat.controller.spec.ts     # Pruebas unitarias del controlador
+│   │   └── chat.service.spec.ts        # Pruebas unitarias del servicio
 │   ├── common/
 │   │   └── proto/
 │   │       ├── hardware.proto          # Contrato Protobuf compartido de catálogo
 │   │       └── simulator.proto         # Contrato Protobuf compartido de simulador
 │   ├── alerts/                         # Módulo preparado para microservicio de alertas
-│   ├── chat/                           # Módulo preparado para microservicio de chat / IA
 │   ├── kafka/                          # Módulo preparado para mensajería asíncrona Kafka
 │   ├── app.module.ts                   # Módulo raíz (ConfigModule, ObserveModule, etc.)
 │   └── main.ts                         # Bootstrap (Prefijo /api, CORS, ValidationPipe, Tracing)
@@ -93,6 +103,7 @@ hardwareguru-api-gateway/
 - **npm**: v10+
 - **Microservicio de Catálogo en ejecución**: Servicio Go levantado en el puerto `50051` (vía `docker compose up -d` en `hardwareguru-catalogo`).
 - **Microservicio Simulador en ejecución**: Servicio Spring Boot gRPC levantado en el puerto `9090` (`hardwareguru-simulador` / `SimulatorService`).
+- **Microservicio MCP Server en ejecución**: Servicio Node.js (`Taller2-Arquitectura-2-MCP-Server`) levantado en `MCP_SERVICE_URL` (por defecto `http://localhost:3001` en local para no colisionar con el puerto `3000` del Gateway).
 
 ### Paso 1: Configurar Variables de Entorno
 Copia el archivo de plantilla `.env.example` a `.env`:
@@ -117,6 +128,7 @@ KAFKA_CLIENT_ID=api-gateway-producer
 # Microservicios HTTP
 ALERTS_SERVICE_URL=http://localhost:5001
 MCP_SERVICE_URL=http://localhost:3001
+MCP_TIMEOUT_MS=45000
 ```
 
 ### Paso 2: Instalar Dependencias
@@ -440,6 +452,70 @@ Expone el RPC `GuardarBuild` definido en `simulator.proto`.
 | `INTERNAL (13)` / `UNKNOWN (2)` | Error interno en el simulador | `502 Bad Gateway` |
 
 ---
+
+## 6. Contratos de Integración (Módulo Chat / MCP Server IA)
+
+El módulo `ChatModule` reenvía las consultas de lenguaje natural por **HTTP** al microservicio **MCP Server** (`MCP_SERVICE_URL`, por defecto `http://localhost:3001`, endpoint `POST /chat`) con un **timeout amplio de `45000 ms`** (`MCP_TIMEOUT_MS`), pensado para soportar hasta dos llamadas a Gemini más la invocación gRPC al Simulador (`:9090`).
+
+---
+
+### 6.1. Enviar Mensaje al Asistente IA (`POST /api/chat`)
+
+- **Método:** `POST`
+- **Ruta:** `/api/chat`
+- **Identificación de usuario (`x-user-id`):**
+  - El Gateway exige identificar al usuario para reenviar el header `x-user-id` hacia el MCP Server.
+  - Cuando existe sesión autenticada (`req.user`), el Gateway **sobrescribe** cualquier `x-user-id` o `userId` enviado por el cliente.
+  - Mientras no haya guard JWT activo en desarrollo, toma `x-user-id` (header) o `userId` (body); si no se envía ninguno, responde `401 Unauthorized`.
+- **Formatos de Body admitidos:**
+  1. **Directo (contrato MCP):** `{ "prompt": "..." }`
+  2. **Frontend React:** `{ "mensaje": "...", "historial": [...] }` (el Gateway adapta automáticamente el historial reciente y el mensaje en un único `prompt`).
+
+#### Ejemplo de Solicitud Directa:
+```http
+POST /api/chat HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+x-user-id: user-123
+
+{
+  "prompt": "Simula el rendimiento para un PC 1080p con fuente de 500W. La CPU consume 65W (score 5000) y la GPU consume 200W (score 20000)."
+}
+```
+
+#### Ejemplo de Solicitud desde el Frontend React:
+```json
+{
+  "mensaje": "¿Me alcanza una fuente de 550W para esta build?",
+  "historial": [
+    { "rol": "usuario", "texto": "Tengo un Ryzen 5 9600X y RTX 4060" }
+  ]
+}
+```
+
+#### Respuesta (`200 OK`):
+```json
+{
+  "respuesta": "El consumo estimado es de 315W..."
+}
+```
+
+---
+
+### 6.2. Mapeo de Errores HTTP (Chat / MCP)
+
+| Condición / Respuesta MCP | Respuesta HTTP en Gateway |
+| :--- | :--- |
+| `200 OK` | `200 OK` (`{ "respuesta": "..." }`) |
+| `prompt` y `mensaje` ausentes o vacíos / `400` del MCP | `400 Bad Request` |
+| Falta identificación de usuario (`x-user-id`) / `401` del MCP | `401 Unauthorized` |
+| Timeout (`> MCP_TIMEOUT_MS`, por defecto `45000 ms`) | `504 Gateway Timeout` |
+| MCP Server caído (`ECONNREFUSED`) o error interno `5xx` del MCP | `502 Bad Gateway` |
+
+> **Nota operativa:** El MCP Server no expone `GET /health` en su versión actual (si usas balanceador, verifica TCP en el puerto configurado en `MCP_SERVICE_URL`) y, si corre en contenedores separados del Simulador, parametriza su dirección gRPC para no depender de `localhost:9090`.
+
+---
+
 
 
 
