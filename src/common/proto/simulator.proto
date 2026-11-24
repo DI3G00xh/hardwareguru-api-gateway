@@ -8,6 +8,8 @@ option java_package = "com.hardwareguru.simulator.grpc";
 service SimulatorService {
   rpc SimularRendimiento (SimulacionRequest) returns (SimulacionResponse);
   rpc GuardarBuild (GuardarBuildRequest) returns (GuardarBuildResponse);
+  rpc ListarBuilds (ListarBuildsRequest) returns (ListarBuildsResponse);
+  rpc EliminarBuild (EliminarBuildRequest) returns (EliminarBuildResponse);
 }
 
 message SimulacionRequest {
@@ -28,6 +30,7 @@ message SimulacionResponse {
 }
 
 message GuardarBuildRequest {
+  // Campos 1-9 compatibles con el contrato actual del API Gateway
   string user_id = 1;
   string nombre_build = 2;
   string cpu_id = 3;
@@ -37,9 +40,64 @@ message GuardarBuildRequest {
   string psu_id = 7;
   string resolucion = 8;
   int32 consumo_total_watts = 9;
+
+  // Campos opcionales adicionales para nombres y métricas completas
+  string cpu_nombre = 10;
+  string placa_madre_nombre = 11;
+  string ram_nombre = 12;
+  string gpu_nombre = 13;
+  string fuente_nombre = 14;
+  int32 cpu_tdp_watts = 15;
+  int32 gpu_tdp_watts = 16;
+  int32 psu_watts = 17;
+  int32 cuello_botella_porcentaje = 18;
+  string estado_riesgo = 19;
 }
 
 message GuardarBuildResponse {
   string build_id = 1;
   bool success = 2;
+  string mensaje = 3;
+}
+
+message BuildDetalle {
+  string id = 1;
+  string user_id = 2;
+  string nombre_build = 3;
+  string cpu_id = 4;
+  string gpu_id = 5;
+  string motherboard_id = 6;
+  string ram_id = 7;
+  string psu_id = 8;
+  string cpu_nombre = 9;
+  string placa_madre_nombre = 10;
+  string ram_nombre = 11;
+  string gpu_nombre = 12;
+  string fuente_nombre = 13;
+  int32 cpu_tdp_watts = 14;
+  int32 gpu_tdp_watts = 15;
+  int32 psu_watts = 16;
+  string resolucion = 17;
+  int32 consumo_total_watts = 18;
+  int32 cuello_botella_porcentaje = 19;
+  string estado_riesgo = 20;
+  string fecha_creacion = 21;
+}
+
+message ListarBuildsRequest {
+  string user_id = 1;
+}
+
+message ListarBuildsResponse {
+  repeated BuildDetalle builds = 1;
+}
+
+message EliminarBuildRequest {
+  string build_id = 1;
+  string user_id = 2;
+}
+
+message EliminarBuildResponse {
+  bool success = 1;
+  string mensaje = 2;
 }

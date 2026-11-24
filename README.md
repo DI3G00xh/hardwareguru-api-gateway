@@ -85,7 +85,7 @@ hardwareguru-api-gateway/
 │   │   │   └── simulador.interface.ts  # Contratos TypeScript y tipos del cliente gRPC
 │   │   ├── proto/
 │   │   │   └── simulator.proto         # Definición Protocol Buffers del servicio simulador
-│   │   ├── simulador.controller.ts     # Controladores (/api/simulador, /api/simulaciones, /api/simular)
+│   │   ├── simulador.controller.ts     # Controladores (/api/simulador, /api/simulaciones, /api/simular, /api/builds)
 │   │   ├── simulador.service.ts        # Cliente gRPC (deadline 3s), orquestación y mapeo de errores
 │   │   ├── simulador.module.ts         # Configuración del cliente gRPC e importación de CatalogoModule
 │   │   ├── simulador.controller.spec.ts# Pruebas unitarias del controlador
@@ -473,14 +473,24 @@ Endpoint BFF adaptado al contrato del cliente React (`hardwareguru-frontend`). S
 
 ---
 
-### 5.3. Guardar Build (`POST /api/simulador/builds`)
+### 5.3. Gestión de Builds Guardadas (`POST/GET/DELETE /api/simulador/builds` y `/api/builds`)
 
-Expone el RPC `GuardarBuild` definido en `simulator.proto`. **Requiere autenticación (`Authorization: Bearer <token>`).**
+Expone los RPCs `GuardarBuild`, `ListarBuilds` y `EliminarBuild` de `simulator.proto`. **Todas estas rutas requieren autenticación (`Authorization: Bearer <token>`).** El Gateway extrae siempre el `userId` desde el JWT verificado y, al guardar una build, enriquece automáticamente desde `CatalogoService` y `Simulador` (`user_id: "0"`) los nombres comerciales, TDPs, potencia de fuente, consumo total, porcentaje de cuello de botella y estado de riesgo cuando no vienen explícitos en el body.
 
-- **Método:** `POST`
-- **Ruta:** `/api/simulador/builds`
-- **Acceso:** Protegido (`401 Unauthorized` si falta el token o es inválido).
-- **Estado actual en el microservicio Simulador:** El RPC `GuardarBuild` está declarado en `simulator.proto` pero pendiente de implementación en `SimulatorServiceImpl`, por lo que al invocarlo autenticado actualmente el Gateway responderá `501 Not Implemented` (mapeado desde gRPC `UNIMPLEMENTED`).
+- **Guardar Build (`POST /api/simulador/builds`):**
+  - **Acceso:** Protegido (`401 Unauthorized` si falta el token o es inválido).
+  - **Campos base (`1–9`):** `nombreBuild`/`nombre_build`/`nombre`, `cpuId`/`cpu_id`, `gpuId`/`gpu_id`, `motherboardId`/`placaId`, `ramId`/`ram_id`, `psuId`/`fuenteId`, `resolucion` (requerido), `consumoTotalWatts`/`consumo_total_watts`.
+  - **Campos extendidos opcionales (`10–19`):** `cpuNombre`/`cpu_nombre`, `placaMadreNombre`/`placa_madre_nombre`, `ramNombre`/`ram_nombre`, `gpuNombre`/`gpu_nombre`, `fuenteNombre`/`fuente_nombre`, `cpuTdpWatts`/`cpu_tdp_watts`, `gpuTdpWatts`/`gpu_tdp_watts`, `psuWatts`/`psu_watts`, `cuelloBotellaPorcentaje`/`cuello_botella_porcentaje`, `estadoRiesgo`/`estado_riesgo`.
+  - **Respuesta (`201 Created`):** `{ "buildId": "42", "success": true, "mensaje": "Build guardada correctamente" }`.
+- **Listar Builds del Usuario (`GET /api/simulador/builds`):**
+  - **Acceso:** Protegido (`401 Unauthorized` si falta el token o es inválido).
+  - **Respuesta (`200 OK`):** Arreglo de builds (`BuildDetalleGateway[]`) con IDs, nombres comerciales, TDPs, potencia de fuente, métricas, `estadoRiesgo` y `fechaCreacion` (ISO-8601).
+- **Eliminar Build (`DELETE /api/simulador/builds/:id`):**
+  - **Acceso:** Protegido (`401 Unauthorized` si falta el token o es inválido).
+  - **Validación:** `:id` debe ser numérico (`400 Bad Request` si no lo es). Envía siempre el `userId` del JWT para validar pertenencia en el microservicio (`403 Forbidden` si pertenece a otro usuario, `404 Not Found` si no existe).
+  - **Respuesta (`200 OK`):** `{ "success": true, "mensaje": "Build eliminada correctamente" }`.
+- **Alias BFF para Frontend (`POST /api/builds`, `GET /api/builds`, `DELETE /api/builds/:id`):**
+  - Adaptado al contrato `Build` de `hardwareguru-frontend` (`piezas`, `resultado`, `creadaEn`); en `POST /api/builds` valida compatibilidad previa en `CatalogoService` (`422 Unprocessable Entity` si es incompatible).
 
 ---
 
@@ -488,11 +498,12 @@ Expone el RPC `GuardarBuild` definido en `simulator.proto`. **Requiere autentica
 
 | Código gRPC | Significado | Respuesta HTTP en Gateway |
 | :--- | :--- | :--- |
-| `OK (0)` | Simulación exitosa | `200 OK` |
+| `OK (0)` | Operación exitosa | `200 OK` (`201 Created` en `POST .../builds`) |
 | `INVALID_ARGUMENT (3)` | Datos inválidos (o validación previa en DTO/servicio) | `400 Bad Request` |
 | `DEADLINE_EXCEEDED (4)` | Timeout al simular (`> 3000 ms`) | `504 Gateway Timeout` |
-| `NOT_FOUND (5)` | Recurso no encontrado | `404 Not Found` |
-| `UNIMPLEMENTED (12)` | RPC no implementado (ej. `GuardarBuild`) | `501 Not Implemented` |
+| `NOT_FOUND (5)` | Recurso/build no encontrada | `404 Not Found` |
+| `PERMISSION_DENIED (7)` | La build pertenece a otro usuario | `403 Forbidden` |
+| `UNIMPLEMENTED (12)` | RPC no implementado | `501 Not Implemented` |
 | `UNAVAILABLE (14)` | Microservicio simulador apagado o inaccesible | `503 Service Unavailable` |
 | `INTERNAL (13)` / `UNKNOWN (2)` | Error interno en el simulador | `502 Bad Gateway` |
 
@@ -579,7 +590,7 @@ El módulo `AuthModule` actúa como proxy seguro hacia el **Auth Service** (`AUT
 | `PUT /api/auth/profile` | **Protegido (JWT)** | `401 Unauthorized` |
 | `GET /api/componentes`, `GET /api/componentes/:id`, `POST /api/componentes/compatibilidad`, `POST /api/compatibilidad` | **Opcional (Invitado o JWT)** | Permitido (si envía token inválido → `401`) |
 | `POST /api/simular`, `POST /api/simulador`, `POST /api/simulador/calcular`, `POST /api/simulaciones` | **Opcional (Invitado o JWT)** | Modo invitado `"0"` (si envía token válido, asocia `userId`; si es inválido → `401`) |
-| `POST /api/simulador/builds` | **Protegido (JWT)** | `401 Unauthorized` |
+| `POST /api/simulador/builds`, `GET /api/simulador/builds`, `DELETE /api/simulador/builds/:id`, `/api/builds` | **Protegido (JWT)** | `401 Unauthorized` |
 | `POST /api/chat` | **Protegido (JWT)** | `401 Unauthorized` |
 | `GET /api/alerts` | **Protegido (JWT)** | `401 Unauthorized` |
 | `PATCH /api/alerts/:id/read` | **Protegido (JWT)** | `401 Unauthorized` |

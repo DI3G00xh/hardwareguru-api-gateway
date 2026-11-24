@@ -1,4 +1,11 @@
-import { IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class SimularDto {
   @IsInt()
@@ -213,12 +220,136 @@ export class GuardarBuildDto {
   resolucion: string;
 
   @IsInt()
-  @Min(1)
+  @Min(0)
   @IsOptional()
   consumoTotalWatts?: number;
 
   @IsInt()
-  @Min(1)
+  @Min(0)
   @IsOptional()
   consumo_total_watts?: number;
+
+  @IsString()
+  @IsOptional()
+  cpuNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  cpu_nombre?: string;
+
+  @IsString()
+  @IsOptional()
+  placaMadreNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  placa_madre_nombre?: string;
+
+  @IsString()
+  @IsOptional()
+  motherboardNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  motherboard_nombre?: string;
+
+  @IsString()
+  @IsOptional()
+  placaNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  placa_nombre?: string;
+
+  @IsString()
+  @IsOptional()
+  ramNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  ram_nombre?: string;
+
+  @IsString()
+  @IsOptional()
+  gpuNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  gpu_nombre?: string;
+
+  @IsString()
+  @IsOptional()
+  fuenteNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  fuente_nombre?: string;
+
+  @IsString()
+  @IsOptional()
+  psuNombre?: string;
+
+  @IsString()
+  @IsOptional()
+  psu_nombre?: string;
+
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  cpuTdpWatts?: number;
+
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  cpu_tdp_watts?: number;
+
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  gpuTdpWatts?: number;
+
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  gpu_tdp_watts?: number;
+
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  psuWatts?: number;
+
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  psu_watts?: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  @IsOptional()
+  cuelloBotellaPorcentaje?: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  @IsOptional()
+  cuello_botella_porcentaje?: number;
+
+  @IsString()
+  @IsOptional()
+  estadoRiesgo?: string;
+
+  @IsString()
+  @IsOptional()
+  estado_riesgo?: string;
+
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  ramCantidad?: number;
+
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  ram_cantidad?: number;
 }

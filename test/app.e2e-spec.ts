@@ -9,6 +9,7 @@ import { AlertsService } from './../src/alerts/alerts.service';
 import { AuthService } from './../src/auth/auth.service';
 import { CatalogoService } from './../src/catalogo/catalogo.service';
 import { ChatService } from './../src/chat/chat.service';
+import { SimuladorService } from './../src/simulador/simulador.service';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
@@ -52,6 +53,13 @@ describe('Auth & Gateway Security (e2e)', () => {
   let mockAlertsService: {
     listAlerts: jest.Mock<any>;
     markAsRead: jest.Mock<any>;
+  };
+  let mockSimuladorService: {
+    guardarBuild: jest.Mock<any>;
+    listarBuilds: jest.Mock<any>;
+    eliminarBuild: jest.Mock<any>;
+    guardarBuildParaFrontend: jest.Mock<any>;
+    listarBuildsParaFrontend: jest.Mock<any>;
   };
 
   const signToken = async (
@@ -98,6 +106,13 @@ describe('Auth & Gateway Security (e2e)', () => {
       listAlerts: jest.fn(),
       markAsRead: jest.fn(),
     };
+    mockSimuladorService = {
+      guardarBuild: jest.fn(),
+      listarBuilds: jest.fn(),
+      eliminarBuild: jest.fn(),
+      guardarBuildParaFrontend: jest.fn(),
+      listarBuildsParaFrontend: jest.fn(),
+    };
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -110,6 +125,8 @@ describe('Auth & Gateway Security (e2e)', () => {
       .useValue(mockCatalogoService)
       .overrideProvider(AlertsService)
       .useValue(mockAlertsService)
+      .overrideProvider(SimuladorService)
+      .useValue(mockSimuladorService)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -327,5 +344,74 @@ describe('Auth & Gateway Security (e2e)', () => {
 
     expect(mockAlertsService.markAsRead).toHaveBeenCalledWith(alertId, 'u1');
     expect(patchRes.body).toEqual(readAlert);
+  });
+
+  it('Rutas de gestión de builds (/api/simulador/builds y /api/builds) requieren JWT e ignoran x-user-id falsificado', async () => {
+    await request(app.getHttpServer()).get('/api/simulador/builds').expect(401);
+    await request(app.getHttpServer())
+      .post('/api/simulador/builds')
+      .send({ resolucion: '1080p' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete('/api/simulador/builds/1')
+      .expect(401);
+    await request(app.getHttpServer()).get('/api/builds').expect(401);
+
+    const token = await signToken({ user_id: '42', role: 'user' });
+    mockSimuladorService.guardarBuild.mockResolvedValue({
+      buildId: '10',
+      success: true,
+      mensaje: 'Build guardada correctamente',
+    });
+    mockSimuladorService.listarBuilds.mockResolvedValue([
+      { id: '10', userId: '42', nombreBuild: 'Mi PC' },
+    ]);
+    mockSimuladorService.eliminarBuild.mockResolvedValue({
+      success: true,
+      mensaje: 'Build eliminada correctamente',
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/simulador/builds')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-user-id', '999')
+      .send({
+        nombreBuild: 'Mi PC',
+        cpuId: 'cpu-1',
+        cpuNombre: 'Ryzen 5 9600X',
+        cpuTdpWatts: 65,
+        cuelloBotellaPorcentaje: 0,
+        estadoRiesgo: 'Óptimo',
+        resolucion: '1080p',
+      })
+      .expect(201);
+
+    expect(mockSimuladorService.guardarBuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nombreBuild: 'Mi PC',
+        cpuNombre: 'Ryzen 5 9600X',
+        cpuTdpWatts: 65,
+        cuelloBotellaPorcentaje: 0,
+        estadoRiesgo: 'Óptimo',
+        resolucion: '1080p',
+      }),
+      '42',
+    );
+
+    await request(app.getHttpServer())
+      .get('/api/simulador/builds')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-user-id', '999')
+      .expect(200);
+
+    expect(mockSimuladorService.listarBuilds).toHaveBeenCalledWith('42');
+
+    await request(app.getHttpServer())
+      .delete('/api/simulador/builds/10')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-user-id', '999')
+      .expect(200);
+
+    expect(mockSimuladorService.eliminarBuild).toHaveBeenCalledWith('10', '42');
   });
 });

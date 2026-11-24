@@ -5,6 +5,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { CatalogoModule } from '../catalogo/catalogo.module';
 import {
+  BuildsController,
   SimulacionesController,
   SimuladorController,
   SimularController,
@@ -42,13 +43,22 @@ const getProtoPath = () => {
               'localhost:9090',
             loader: {
               keepCase: true,
+              longs: String,
+              enums: String,
+              defaults: true,
+              oneofs: true,
             },
           },
         }),
       },
     ]),
   ],
-  controllers: [SimuladorController, SimulacionesController, SimularController],
+  controllers: [
+    SimuladorController,
+    SimulacionesController,
+    SimularController,
+    BuildsController,
+  ],
   providers: [SimuladorService],
   exports: [SimuladorService],
 })

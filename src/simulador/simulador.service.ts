@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ForbiddenException,
   GatewayTimeoutException,
   HttpException,
   Inject,
@@ -9,13 +10,19 @@ import {
   NotImplementedException,
   OnModuleInit,
   ServiceUnavailableException,
+  UnauthorizedException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { Metadata, status as GrpcStatus } from '@grpc/grpc-js';
 import type { ClientGrpc } from '@nestjs/microservices';
-import { TimeoutError, firstValueFrom, timeout } from 'rxjs';
+import { Observable, TimeoutError, firstValueFrom, timeout } from 'rxjs';
 import { CatalogoService } from '../catalogo/catalogo.service';
 import type { GuardarBuildDto, SimularDto } from './dto/simular.dto';
 import type {
+  BuildDetalle,
+  BuildDetalleGateway,
+  BuildFrontendResponse,
+  EliminarBuildGatewayResponse,
   EstadoSimulacionFrontend,
   GuardarBuildGatewayResponse,
   GuardarBuildRequest,
@@ -26,6 +33,14 @@ import type {
 } from './interfaces/simulador.interface';
 
 const GRPC_DEADLINE_MS = 3000;
+
+interface ComponentSpecLookup {
+  nombre?: string;
+  tdp?: unknown;
+  potenciaW?: unknown;
+  especificaciones?: Record<string, unknown>;
+  benchmarks?: Record<string, unknown>;
+}
 
 @Injectable()
 export class SimuladorService implements OnModuleInit {
@@ -50,23 +65,20 @@ export class SimuladorService implements OnModuleInit {
       authenticatedUserId,
     );
 
-    try {
-      const deadline = new Date(Date.now() + GRPC_DEADLINE_MS);
-      const response = await firstValueFrom(
-        this.simulatorClient
-          .simularRendimiento(requestPayload, new Metadata(), { deadline })
-          .pipe(timeout(GRPC_DEADLINE_MS)),
-      );
+    const response = await this.callGrpc((metadata, options) =>
+      this.simulatorClient.simularRendimiento(
+        requestPayload,
+        metadata,
+        options,
+      ),
+    );
 
-      return {
-        consumoTotalWatts: response.consumo_total_watts,
-        cuelloBotellaPorcentaje: response.cuello_botella_porcentaje,
-        estado: response.estado,
-        motivo: response.motivo,
-      };
-    } catch (error) {
-      this.handleGrpcError(error);
-    }
+    return {
+      consumoTotalWatts: response.consumo_total_watts,
+      cuelloBotellaPorcentaje: response.cuello_botella_porcentaje,
+      estado: response.estado,
+      motivo: response.motivo,
+    };
   }
 
   async simularParaFrontend(
@@ -109,9 +121,7 @@ export class SimuladorService implements OnModuleInit {
     }
 
     const resultado = await this.simular(dto, authenticatedUserId);
-
-    const estado: EstadoSimulacionFrontend =
-      resultado.estado === 'Óptimo' ? 'BALANCEADO' : 'RIESGO';
+    const estado = this.mapEstadoFrontend(resultado.estado);
 
     return {
       consumoEstimadoW: resultado.consumoTotalWatts,
@@ -126,6 +136,144 @@ export class SimuladorService implements OnModuleInit {
     dto: GuardarBuildDto,
     authenticatedUserId?: string,
   ): Promise<GuardarBuildGatewayResponse> {
+    const { payload } = await this.prepareGuardarBuildPayload(
+      dto,
+      authenticatedUserId,
+    );
+
+    const response = await this.callGrpc((metadata, options) =>
+      this.simulatorClient.guardarBuild(payload, metadata, options),
+    );
+
+    return {
+      buildId: response.build_id,
+      success: response.success,
+      mensaje: response.mensaje ?? '',
+    };
+  }
+
+  async listarBuilds(userId?: string): Promise<BuildDetalleGateway[]> {
+    const resolvedUserId = this.requireAuthenticatedUserId(userId);
+    const response = await this.callGrpc((metadata, options) =>
+      this.simulatorClient.listarBuilds(
+        { user_id: resolvedUserId },
+        metadata,
+        options,
+      ),
+    );
+
+    return (response?.builds ?? []).map((build) => this.mapBuildDetalle(build));
+  }
+
+  async eliminarBuild(
+    buildId: string,
+    userId?: string,
+  ): Promise<EliminarBuildGatewayResponse> {
+    const cleanBuildId = buildId?.trim();
+    if (!cleanBuildId) {
+      throw new BadRequestException('El build_id es obligatorio');
+    }
+    if (!/^\d+$/.test(cleanBuildId)) {
+      throw new BadRequestException('El build_id debe ser numérico');
+    }
+
+    const resolvedUserId = this.requireAuthenticatedUserId(userId);
+    const response = await this.callGrpc((metadata, options) =>
+      this.simulatorClient.eliminarBuild(
+        { build_id: cleanBuildId, user_id: resolvedUserId },
+        metadata,
+        options,
+      ),
+    );
+
+    return {
+      success: response.success,
+      mensaje: response.mensaje ?? '',
+    };
+  }
+
+  async guardarBuildParaFrontend(
+    dto: GuardarBuildDto,
+    authenticatedUserId?: string,
+  ): Promise<BuildFrontendResponse> {
+    const resolvedUserId = this.requireAuthenticatedUserId(authenticatedUserId);
+
+    const cpuId = dto.cpuId ?? dto.cpu_id ?? '';
+    const motherboardId =
+      dto.motherboardId ?? dto.motherboard_id ?? dto.placaId ?? dto.placa_id ?? '';
+    const ramId = dto.ramId ?? dto.ram_id ?? '';
+    const gpuId = dto.gpuId ?? dto.gpu_id ?? '';
+    const psuId = dto.psuId ?? dto.psu_id ?? dto.fuenteId ?? dto.fuente_id ?? '';
+
+    if (cpuId && motherboardId && ramId && psuId) {
+      const compat = await this.catalogoService.verificarCompatibilidad({
+        cpu_id: cpuId,
+        motherboard_id: motherboardId,
+        ram_id: ramId,
+        gpu_id: gpuId,
+        psu_id: psuId,
+        ram_cantidad: dto.ramCantidad ?? dto.ram_cantidad ?? 1,
+      });
+
+      if (!compat.compatible) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          code: 'INCOMPATIBLE_BUILD',
+          message:
+            compat.errores.join(' ') ||
+            'La configuración seleccionada no es compatible.',
+        });
+      }
+    }
+
+    const { payload, motivo } = await this.prepareGuardarBuildPayload(
+      dto,
+      resolvedUserId,
+    );
+
+    const response = await this.callGrpc((metadata, options) =>
+      this.simulatorClient.guardarBuild(payload, metadata, options),
+    );
+
+    return this.toBuildFrontendResponse(
+      {
+        id: response.build_id,
+        userId: payload.user_id,
+        nombreBuild: payload.nombre_build || 'Mi Build',
+        cpuId: payload.cpu_id,
+        gpuId: payload.gpu_id,
+        motherboardId: payload.motherboard_id,
+        ramId: payload.ram_id,
+        psuId: payload.psu_id,
+        cpuNombre: payload.cpu_nombre ?? '',
+        placaMadreNombre: payload.placa_madre_nombre ?? '',
+        ramNombre: payload.ram_nombre ?? '',
+        gpuNombre: payload.gpu_nombre ?? '',
+        fuenteNombre: payload.fuente_nombre ?? '',
+        cpuTdpWatts: payload.cpu_tdp_watts ?? 0,
+        gpuTdpWatts: payload.gpu_tdp_watts ?? 0,
+        psuWatts: payload.psu_watts ?? 0,
+        resolucion: payload.resolucion,
+        consumoTotalWatts: payload.consumo_total_watts,
+        cuelloBotellaPorcentaje: payload.cuello_botella_porcentaje ?? 0,
+        estadoRiesgo: payload.estado_riesgo ?? 'Óptimo',
+        fechaCreacion: new Date().toISOString(),
+      },
+      motivo,
+    );
+  }
+
+  async listarBuildsParaFrontend(
+    userId?: string,
+  ): Promise<BuildFrontendResponse[]> {
+    const builds = await this.listarBuilds(userId);
+    return builds.map((build) => this.toBuildFrontendResponse(build));
+  }
+
+  private async prepareGuardarBuildPayload(
+    dto: GuardarBuildDto,
+    authenticatedUserId?: string,
+  ): Promise<{ payload: GuardarBuildRequest; motivo: string | null }> {
     const resolucion = dto.resolucion?.trim();
     if (!resolucion) {
       throw new BadRequestException('El campo resolucion es obligatorio');
@@ -136,6 +284,133 @@ export class SimuladorService implements OnModuleInit {
       dto.userId ?? dto.user_id,
     );
 
+    const cpuId = (dto.cpuId ?? dto.cpu_id ?? '').trim();
+    const gpuId = (dto.gpuId ?? dto.gpu_id ?? '').trim();
+    const motherboardId = (
+      dto.motherboardId ??
+      dto.motherboard_id ??
+      dto.placaId ??
+      dto.placa_id ??
+      ''
+    ).trim();
+    const ramId = (dto.ramId ?? dto.ram_id ?? '').trim();
+    const psuId = (
+      dto.psuId ??
+      dto.psu_id ??
+      dto.fuenteId ??
+      dto.fuente_id ??
+      ''
+    ).trim();
+
+    let cpuNombre = (dto.cpuNombre ?? dto.cpu_nombre)?.trim();
+    let placaMadreNombre = (
+      dto.placaMadreNombre ??
+      dto.placa_madre_nombre ??
+      dto.motherboardNombre ??
+      dto.motherboard_nombre ??
+      dto.placaNombre ??
+      dto.placa_nombre
+    )?.trim();
+    let ramNombre = (dto.ramNombre ?? dto.ram_nombre)?.trim();
+    let gpuNombre = (dto.gpuNombre ?? dto.gpu_nombre)?.trim();
+    let fuenteNombre = (
+      dto.fuenteNombre ??
+      dto.fuente_nombre ??
+      dto.psuNombre ??
+      dto.psu_nombre
+    )?.trim();
+
+    let cpuTdpWatts = dto.cpuTdpWatts ?? dto.cpu_tdp_watts;
+    let gpuTdpWatts = dto.gpuTdpWatts ?? dto.gpu_tdp_watts;
+    let psuWatts = dto.psuWatts ?? dto.psu_watts;
+    let consumoTotalWatts = dto.consumoTotalWatts ?? dto.consumo_total_watts;
+    let cuelloBotellaPorcentaje =
+      dto.cuelloBotellaPorcentaje ?? dto.cuello_botella_porcentaje;
+    let estadoRiesgo = (dto.estadoRiesgo ?? dto.estado_riesgo)?.trim();
+    let motivoSimulacion: string | null = null;
+
+    const needsSimMetrics =
+      consumoTotalWatts === undefined ||
+      cuelloBotellaPorcentaje === undefined ||
+      !estadoRiesgo;
+
+    const needsCpu =
+      Boolean(cpuId) &&
+      (!cpuNombre || cpuTdpWatts === undefined || needsSimMetrics);
+    const needsMb = Boolean(motherboardId) && !placaMadreNombre;
+    const needsRam = Boolean(ramId) && !ramNombre;
+    const needsGpu =
+      Boolean(gpuId) &&
+      (!gpuNombre || gpuTdpWatts === undefined || needsSimMetrics);
+    const needsPsu =
+      Boolean(psuId) &&
+      (!fuenteNombre || psuWatts === undefined || needsSimMetrics);
+
+    const [cpuSpec, mbSpec, ramSpec, gpuSpec, psuSpec] = await Promise.all([
+      needsCpu ? this.obtenerSpecsOpcional(cpuId) : Promise.resolve(null),
+      needsMb ? this.obtenerSpecsOpcional(motherboardId) : Promise.resolve(null),
+      needsRam ? this.obtenerSpecsOpcional(ramId) : Promise.resolve(null),
+      needsGpu ? this.obtenerSpecsOpcional(gpuId) : Promise.resolve(null),
+      needsPsu ? this.obtenerSpecsOpcional(psuId) : Promise.resolve(null),
+    ]);
+
+    if (cpuSpec) {
+      cpuNombre ||= cpuSpec.nombre?.trim();
+      cpuTdpWatts ??= this.extractTdp(cpuSpec);
+    }
+    if (mbSpec) {
+      placaMadreNombre ||= mbSpec.nombre?.trim();
+    }
+    if (ramSpec) {
+      ramNombre ||= ramSpec.nombre?.trim();
+    }
+    if (gpuSpec) {
+      gpuNombre ||= gpuSpec.nombre?.trim();
+      gpuTdpWatts ??= this.extractTdp(gpuSpec);
+    }
+    if (psuSpec) {
+      fuenteNombre ||= psuSpec.nombre?.trim();
+      psuWatts ??= this.extractPsuWatts(psuSpec);
+    }
+
+    if (needsSimMetrics) {
+      const cpuScore = this.extractCpuBenchmarkScore(cpuSpec?.benchmarks);
+      const gpuScore = this.extractGpuBenchmarkScore(gpuSpec?.benchmarks);
+
+      if (
+        cpuTdpWatts !== undefined &&
+        gpuTdpWatts !== undefined &&
+        psuWatts !== undefined &&
+        psuWatts > 0 &&
+        cpuScore !== undefined &&
+        gpuScore !== undefined
+      ) {
+        try {
+          const sim = await this.callGrpc((metadata, options) =>
+            this.simulatorClient.simularRendimiento(
+              {
+                cpu_tdp_watts: Math.round(cpuTdpWatts),
+                cpu_benchmark_score: Math.round(cpuScore),
+                gpu_tdp_watts: Math.round(gpuTdpWatts),
+                gpu_benchmark_score: Math.round(gpuScore),
+                resolucion,
+                psu_watts: Math.round(psuWatts),
+                user_id: '0',
+              },
+              metadata,
+              options,
+            ),
+          );
+          consumoTotalWatts ??= sim.consumo_total_watts;
+          cuelloBotellaPorcentaje ??= sim.cuello_botella_porcentaje;
+          estadoRiesgo ||= sim.estado;
+          motivoSimulacion = sim.estado === 'Óptimo' ? null : sim.motivo;
+        } catch {
+          // Si la pre-simulación falla, continúa con los valores disponibles sin bloquear el guardado
+        }
+      }
+    }
+
     const payload: GuardarBuildRequest = {
       user_id: userId,
       nombre_build: (
@@ -144,35 +419,40 @@ export class SimuladorService implements OnModuleInit {
         dto.nombre ??
         ''
       ).trim(),
-      cpu_id: dto.cpuId ?? dto.cpu_id ?? '',
-      gpu_id: dto.gpuId ?? dto.gpu_id ?? '',
-      motherboard_id:
-        dto.motherboardId ??
-        dto.motherboard_id ??
-        dto.placaId ??
-        dto.placa_id ??
-        '',
-      ram_id: dto.ramId ?? dto.ram_id ?? '',
-      psu_id: dto.psuId ?? dto.psu_id ?? dto.fuenteId ?? dto.fuente_id ?? '',
+      cpu_id: cpuId,
+      gpu_id: gpuId,
+      motherboard_id: motherboardId,
+      ram_id: ramId,
+      psu_id: psuId,
       resolucion,
       consumo_total_watts:
-        dto.consumoTotalWatts ?? dto.consumo_total_watts ?? 0,
+        consumoTotalWatts !== undefined ? Math.round(consumoTotalWatts) : 0,
+      cpu_nombre: cpuNombre ?? '',
+      placa_madre_nombre: placaMadreNombre ?? '',
+      ram_nombre: ramNombre ?? '',
+      gpu_nombre: gpuNombre ?? '',
+      fuente_nombre: fuenteNombre ?? '',
+      cpu_tdp_watts: cpuTdpWatts !== undefined ? Math.round(cpuTdpWatts) : 0,
+      gpu_tdp_watts: gpuTdpWatts !== undefined ? Math.round(gpuTdpWatts) : 0,
+      psu_watts: psuWatts !== undefined ? Math.round(psuWatts) : 0,
+      cuello_botella_porcentaje:
+        cuelloBotellaPorcentaje !== undefined
+          ? Math.round(cuelloBotellaPorcentaje)
+          : 0,
+      estado_riesgo: estadoRiesgo || 'Óptimo',
     };
 
-    try {
-      const deadline = new Date(Date.now() + GRPC_DEADLINE_MS);
-      const response = await firstValueFrom(
-        this.simulatorClient
-          .guardarBuild(payload, new Metadata(), { deadline })
-          .pipe(timeout(GRPC_DEADLINE_MS)),
-      );
+    return { payload, motivo: motivoSimulacion };
+  }
 
-      return {
-        buildId: response.build_id,
-        success: response.success,
-      };
-    } catch (error) {
-      this.handleGrpcError(error);
+  private async obtenerSpecsOpcional(
+    id: string,
+  ): Promise<ComponentSpecLookup | null> {
+    try {
+      const spec = await this.catalogoService.obtenerSpecs(id);
+      return (spec ?? null) as ComponentSpecLookup | null;
+    } catch {
+      return null;
     }
   }
 
@@ -213,24 +493,17 @@ export class SimuladorService implements OnModuleInit {
       ]);
 
       if (cpuSpec) {
-        cpuTdpWatts ??=
-          this.toPositiveOrZeroInt(cpuSpec.tdp) ??
-          this.toPositiveOrZeroInt(cpuSpec.especificaciones?.tdp);
+        cpuTdpWatts ??= this.extractTdp(cpuSpec);
         cpuBenchmarkScore ??= this.extractCpuBenchmarkScore(cpuSpec.benchmarks);
       }
 
       if (gpuSpec) {
-        gpuTdpWatts ??=
-          this.toPositiveOrZeroInt(gpuSpec.tdp) ??
-          this.toPositiveOrZeroInt(gpuSpec.especificaciones?.tdp);
+        gpuTdpWatts ??= this.extractTdp(gpuSpec);
         gpuBenchmarkScore ??= this.extractGpuBenchmarkScore(gpuSpec.benchmarks);
       }
 
       if (psuSpec) {
-        psuWatts ??=
-          this.toPositiveInt(psuSpec.potenciaW) ??
-          this.toPositiveInt(psuSpec.especificaciones?.potenciaW) ??
-          this.toPositiveInt(psuSpec.especificaciones?.potencia_w);
+        psuWatts ??= this.extractPsuWatts(psuSpec);
       }
     }
 
@@ -298,6 +571,98 @@ export class SimuladorService implements OnModuleInit {
     };
   }
 
+  private mapBuildDetalle(build: BuildDetalle): BuildDetalleGateway {
+    return {
+      id: build.id,
+      userId: build.user_id,
+      nombreBuild: build.nombre_build,
+      cpuId: build.cpu_id,
+      gpuId: build.gpu_id,
+      motherboardId: build.motherboard_id,
+      ramId: build.ram_id,
+      psuId: build.psu_id,
+      cpuNombre: build.cpu_nombre,
+      placaMadreNombre: build.placa_madre_nombre,
+      ramNombre: build.ram_nombre,
+      gpuNombre: build.gpu_nombre,
+      fuenteNombre: build.fuente_nombre,
+      cpuTdpWatts: build.cpu_tdp_watts ?? 0,
+      gpuTdpWatts: build.gpu_tdp_watts ?? 0,
+      psuWatts: build.psu_watts ?? 0,
+      resolucion: build.resolucion,
+      consumoTotalWatts: build.consumo_total_watts ?? 0,
+      cuelloBotellaPorcentaje: build.cuello_botella_porcentaje ?? 0,
+      estadoRiesgo: build.estado_riesgo,
+      fechaCreacion: build.fecha_creacion,
+    };
+  }
+
+  private toBuildFrontendResponse(
+    build: BuildDetalleGateway,
+    motivo?: string | null,
+  ): BuildFrontendResponse {
+    const estado = this.mapEstadoFrontend(build.estadoRiesgo);
+
+    return {
+      id: build.id,
+      nombre: build.nombreBuild,
+      creadaEn: build.fechaCreacion,
+      resolucion: build.resolucion,
+      piezas: {
+        cpu: {
+          id: build.cpuId,
+          nombre: build.cpuNombre || build.cpuId,
+          tdp: build.cpuTdpWatts,
+        },
+        placa: {
+          id: build.motherboardId,
+          nombre: build.placaMadreNombre || build.motherboardId,
+        },
+        ram: {
+          id: build.ramId,
+          nombre: build.ramNombre || build.ramId,
+        },
+        gpu: {
+          id: build.gpuId,
+          nombre: build.gpuNombre || build.gpuId,
+          tdp: build.gpuTdpWatts,
+        },
+        fuente: {
+          id: build.psuId,
+          nombre: build.fuenteNombre || build.psuId,
+          potenciaW: build.psuWatts,
+        },
+      },
+      resultado: {
+        consumoEstimadoW: build.consumoTotalWatts,
+        cuelloBotellaPct: build.cuelloBotellaPorcentaje,
+        resolucion: build.resolucion,
+        estado,
+        motivo:
+          estado === 'BALANCEADO' ? null : (motivo ?? build.estadoRiesgo),
+      },
+    };
+  }
+
+  private mapEstadoFrontend(estado?: string): EstadoSimulacionFrontend {
+    const normalized = estado?.trim();
+    if (normalized === 'Óptimo' || normalized === 'BALANCEADO') {
+      return 'BALANCEADO';
+    }
+    if (normalized === 'INCOMPATIBLE') {
+      return 'INCOMPATIBLE';
+    }
+    return 'RIESGO';
+  }
+
+  private requireAuthenticatedUserId(userId?: string): string {
+    const resolved = userId?.trim();
+    if (!resolved || resolved === '0') {
+      throw new UnauthorizedException('Token de usuario requerido');
+    }
+    return resolved;
+  }
+
   private resolveUserId(
     authenticatedUserId?: string,
     fallbackUserId?: string,
@@ -308,6 +673,21 @@ export class SimuladorService implements OnModuleInit {
     }
     const bodyId = fallbackUserId?.trim();
     return bodyId || '0';
+  }
+
+  private extractTdp(spec: ComponentSpecLookup): number | undefined {
+    return (
+      this.toPositiveOrZeroInt(spec.tdp) ??
+      this.toPositiveOrZeroInt(spec.especificaciones?.tdp)
+    );
+  }
+
+  private extractPsuWatts(spec: ComponentSpecLookup): number | undefined {
+    return (
+      this.toPositiveInt(spec.potenciaW) ??
+      this.toPositiveInt(spec.especificaciones?.potenciaW) ??
+      this.toPositiveInt(spec.especificaciones?.potencia_w)
+    );
   }
 
   private extractCpuBenchmarkScore(
@@ -392,6 +772,19 @@ export class SimuladorService implements OnModuleInit {
     return undefined;
   }
 
+  private async callGrpc<T>(
+    invoke: (metadata: Metadata, options: { deadline: Date }) => Observable<T>,
+  ): Promise<T> {
+    try {
+      const deadline = new Date(Date.now() + GRPC_DEADLINE_MS);
+      return await firstValueFrom(
+        invoke(new Metadata(), { deadline }).pipe(timeout(GRPC_DEADLINE_MS)),
+      );
+    } catch (error) {
+      this.handleGrpcError(error);
+    }
+  }
+
   private handleGrpcError(error: unknown): never {
     if (error instanceof HttpException) {
       throw error;
@@ -420,6 +813,8 @@ export class SimuladorService implements OnModuleInit {
         );
       case GrpcStatus.NOT_FOUND:
         throw new NotFoundException(detail);
+      case GrpcStatus.PERMISSION_DENIED:
+        throw new ForbiddenException(detail);
       case GrpcStatus.UNIMPLEMENTED:
         throw new NotImplementedException(
           detail || 'Operación no implementada en el microservicio simulador',

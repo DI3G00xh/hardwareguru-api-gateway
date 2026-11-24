@@ -1,8 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
+  Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Req,
 } from '@nestjs/common';
@@ -58,6 +61,19 @@ export class SimuladorController {
       extractAuthenticatedUserId(req),
     );
   }
+
+  @Get('builds')
+  async listarBuilds(@Req() req?: RequestWithUser) {
+    return this.simuladorService.listarBuilds(extractAuthenticatedUserId(req));
+  }
+
+  @Delete('builds/:id')
+  async eliminarBuild(@Param('id') id: string, @Req() req?: RequestWithUser) {
+    return this.simuladorService.eliminarBuild(
+      id,
+      extractAuthenticatedUserId(req),
+    );
+  }
 }
 
 @OptionalAuth()
@@ -85,6 +101,40 @@ export class SimularController {
   ) {
     return this.simuladorService.simularParaFrontend(
       dto,
+      extractAuthenticatedUserId(req),
+    );
+  }
+}
+
+@Controller('builds')
+export class BuildsController {
+  constructor(private readonly simuladorService: SimuladorService) {}
+
+  @Post()
+  async guardarBuildFrontend(
+    @Body() dto: GuardarBuildDto,
+    @Req() req?: RequestWithUser,
+  ) {
+    return this.simuladorService.guardarBuildParaFrontend(
+      dto,
+      extractAuthenticatedUserId(req),
+    );
+  }
+
+  @Get()
+  async listarBuildsFrontend(@Req() req?: RequestWithUser) {
+    return this.simuladorService.listarBuildsParaFrontend(
+      extractAuthenticatedUserId(req),
+    );
+  }
+
+  @Delete(':id')
+  async eliminarBuildFrontend(
+    @Param('id') id: string,
+    @Req() req?: RequestWithUser,
+  ) {
+    return this.simuladorService.eliminarBuild(
+      id,
       extractAuthenticatedUserId(req),
     );
   }
