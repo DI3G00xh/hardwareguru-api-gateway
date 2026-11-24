@@ -22,7 +22,7 @@ API Gateway y Backend-For-Frontend (BFF) desarrollado con **NestJS** para el eco
 |  - Validación de DTOs (ValidationPipe + class-validator)                                          |
 |  - Deserialización nativa de JSON (specs y benchmarks) y normalización camelCase <-> snake_case   |
 |  - Orquestación IDs -> métricas vía Catálogo antes de simular                                     |
-|  - Proxy HTTP hacia Auth Service (:4000) y MCP Server (:3001, timeout 45s)                        |
+|  - Proxy HTTP hacia Auth Service (:4000), Alerts Service (:5001, timeout 5s) y MCP Server (:3001, timeout 45s) |
 |  - Deadlines gRPC (3000 ms) y mapeo de errores (400, 401, 403, 404, 501-504)                      |
 |  - Telemetría y tracing con NestJS Observe                                                        |
 +--------+--------------------------+-----------------------------+-------------------------------+
@@ -104,7 +104,14 @@ hardwareguru-api-gateway/
 │   │   └── proto/
 │   │       ├── hardware.proto          # Contrato Protobuf compartido de catálogo
 │   │       └── simulator.proto         # Contrato Protobuf compartido de simulador
-│   ├── alerts/                         # Módulo preparado para microservicio de alertas
+│   ├── alerts/                         # Módulo del Microservicio de Alertas (Integrado)
+│   │   ├── interfaces/
+│   │   │   └── alerts.interface.ts     # Contrato HTTP AlertResponse
+│   │   ├── alerts.controller.ts        # Controlador REST (/api/alerts, /api/alerts/:id/read)
+│   │   ├── alerts.service.ts           # Cliente HTTP (@nestjs/axios, timeout 5s) y validación de pertenencia
+│   │   ├── alerts.module.ts            # Configuración de HttpModule (ALERTS_TIMEOUT_MS)
+│   │   ├── alerts.controller.spec.ts   # Pruebas unitarias del controlador
+│   │   └── alerts.service.spec.ts      # Pruebas unitarias del servicio
 │   ├── kafka/                          # Módulo preparado para mensajería asíncrona Kafka
 │   ├── app.module.ts                   # Módulo raíz (ConfigModule, ObserveModule, etc.)
 │   └── main.ts                         # Bootstrap (Prefijo /api, CORS, ValidationPipe, Tracing)
@@ -127,6 +134,7 @@ hardwareguru-api-gateway/
 - **Microservicio de Catálogo en ejecución**: Servicio Go levantado en el puerto `50051` (vía `docker compose up -d` en `hardwareguru-catalogo`).
 - **Microservicio Simulador en ejecución**: Servicio Spring Boot gRPC levantado en el puerto `9090` (`hardwareguru-simulador` / `SimulatorService`).
 - **Microservicio MCP Server en ejecución**: Servicio Node.js (`Taller2-Arquitectura-2-MCP-Server`) levantado en `MCP_SERVICE_URL` (por defecto `http://localhost:3001` en local para no colisionar con el puerto `3000` del Gateway).
+- **Microservicio de Alertas en ejecución**: Servicio .NET (`hardwareguru-alerts-service`) levantado en `ALERTS_SERVICE_URL` (`http://localhost:5001` en local o `http://alerts-api:8080` en Docker Compose).
 
 ### Paso 1: Configurar Variables de Entorno
 Copia el archivo de plantilla `.env.example` a `.env`:
@@ -162,6 +170,7 @@ KAFKA_CLIENT_ID=api-gateway-producer
 
 # Microservicios HTTP
 ALERTS_SERVICE_URL=http://localhost:5001
+ALERTS_TIMEOUT_MS=5000
 MCP_SERVICE_URL=http://localhost:3001
 MCP_TIMEOUT_MS=45000
 ```
@@ -572,6 +581,8 @@ El módulo `AuthModule` actúa como proxy seguro hacia el **Auth Service** (`AUT
 | `POST /api/simular`, `POST /api/simulador`, `POST /api/simulador/calcular`, `POST /api/simulaciones` | **Opcional (Invitado o JWT)** | Modo invitado `"0"` (si envía token válido, asocia `userId`; si es inválido → `401`) |
 | `POST /api/simulador/builds` | **Protegido (JWT)** | `401 Unauthorized` |
 | `POST /api/chat` | **Protegido (JWT)** | `401 Unauthorized` |
+| `GET /api/alerts` | **Protegido (JWT)** | `401 Unauthorized` |
+| `PATCH /api/alerts/:id/read` | **Protegido (JWT)** | `401 Unauthorized` |
 
 ---
 
@@ -729,6 +740,114 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 | Error de negocio retornado por `auth-service` (`400`, `401`, `404`, `409`, etc.) | Mismo código HTTP y payload JSON de `auth-service` |
 | Auth Service caído o inaccesible | `503 Service Unavailable` |
 | Timeout (`> AUTH_TIMEOUT_MS`, por defecto `5000 ms`) | `504 Gateway Timeout` |
+
+---
+
+## 8. Contratos de Integración para el Frontend (Módulo Alertas)
+
+El módulo `AlertsModule` expone el consumo y gestión de alertas de sobrecarga eléctrica generadas de forma asíncrona (vía Kafka en el tópico `builds_guardadas` cuando una build supera el `85%` de la potencia de la fuente). Se comunica por **HTTP** con `hardwareguru-alerts-service` (`ALERTS_SERVICE_URL`, por defecto `http://localhost:5001`, timeout `ALERTS_TIMEOUT_MS` por defecto `5000 ms`).
+
+### Reglas de Seguridad y Comportamiento para el Frontend
+
+1. **Autenticación obligatoria (`Bearer JWT`):**
+   - Todas las rutas de alertas requieren `Authorization: Bearer <token>`. Sin token o con token inválido/expirado, el Gateway responde `401 Unauthorized`.
+2. **Aislamiento por usuario:**
+   - El Frontend **no debe enviar** `userId` en la query string (y si lo envía, el Gateway lo ignora por completo). El Gateway extrae el `userId` exclusivamente del JWT verificado.
+   - Al marcar una alerta como leída (`PATCH`), el Gateway verifica previamente que la alerta pertenezca al usuario autenticado; si pertenece a otro usuario o no existe, responde `404 Not Found`.
+
+---
+
+### 8.1. Listar Alertas del Usuario (`GET /api/alerts`)
+
+Retorna todas las alertas del usuario autenticado, ordenadas por `creadaEn` descendente (más recientes primero).
+
+- **Método:** `GET`
+- **Ruta:** `/api/alerts`
+- **Acceso:** **Protegido** (`Authorization: Bearer <token>`)
+- **Query Params:** Ninguno (cualquier `userId` enviado por el cliente es ignorado).
+
+#### Ejemplo de Solicitud:
+```http
+GET /api/alerts HTTP/1.1
+Host: localhost:3000
+Authorization: Bearer <JWT>
+```
+
+#### Respuesta Exitosa (`200 OK`):
+```json
+[
+  {
+    "id": "8f14e45f-ceea-4e8f-9d42-9c1f4b2a7c10",
+    "buildId": "b2",
+    "buildName": "PC Gamer 1440p",
+    "porcentajeUso": 101,
+    "mensaje": "Tu fuente de 500 W está al 101% de uso con la build \"PC Gamer 1440p\".",
+    "sugerencia": "Haz undervolt o cambia a una fuente de mayor potencia.",
+    "leida": false,
+    "creadaEn": "2026-11-17T20:00:01+00:00"
+  }
+]
+```
+
+#### Campos de cada Alerta (`AlertResponse`):
+| Campo | Tipo | Descripción |
+| :--- | :--- | :--- |
+| `id` | string (UUID) | Identificador único de la alerta |
+| `buildId` | string | Identificador de la build que originó la alerta |
+| `buildName` | string | Nombre de la build |
+| `porcentajeUso` | number | Porcentaje de uso estimado sobre la fuente (`> 85`) |
+| `mensaje` | string | Descripción legible del riesgo de consumo |
+| `sugerencia` | string | Recomendación para mitigar la sobrecarga |
+| `leida` | boolean | Estado de lectura (`false` no leída, `true` leída) |
+| `creadaEn` | string (ISO 8601) | Fecha y hora de creación de la alerta en UTC |
+
+---
+
+### 8.2. Marcar una Alerta como Leída (`PATCH /api/alerts/:id/read`)
+
+Marca como leída una alerta perteneciente al usuario autenticado. La operación es **idempotente**: si la alerta ya estaba marcada con `leida: true`, devuelve `200 OK` sin error.
+
+- **Método:** `PATCH`
+- **Ruta:** `/api/alerts/:id/read`
+- **Acceso:** **Protegido** (`Authorization: Bearer <token>`)
+- **Path Param:** `id` — UUID válido de la alerta.
+- **Body:** No requiere body.
+
+#### Ejemplo de Solicitud:
+```http
+PATCH /api/alerts/8f14e45f-ceea-4e8f-9d42-9c1f4b2a7c10/read HTTP/1.1
+Host: localhost:3000
+Authorization: Bearer <JWT>
+```
+
+#### Respuesta Exitosa (`200 OK`):
+```json
+{
+  "id": "8f14e45f-ceea-4e8f-9d42-9c1f4b2a7c10",
+  "buildId": "b2",
+  "buildName": "PC Gamer 1440p",
+  "porcentajeUso": 101,
+  "mensaje": "Tu fuente de 500 W está al 101% de uso con la build \"PC Gamer 1440p\".",
+  "sugerencia": "Haz undervolt o cambia a una fuente de mayor potencia.",
+  "leida": true,
+  "creadaEn": "2026-11-17T20:00:01+00:00"
+}
+```
+
+---
+
+### 8.3. Mapeo de Errores HTTP (Alertas)
+
+| Condición / Respuesta | Respuesta HTTP en Gateway |
+| :--- | :--- |
+| Operación exitosa (o `PATCH` repetido sobre alerta ya leída) | `200 OK` |
+| `id` en `PATCH` no es un UUID válido, o `400` de `alerts-service` | `400 Bad Request` |
+| Sin token, token inválido/expirado o identidad sin `userId` | `401 Unauthorized` |
+| La alerta no existe o pertenece a otro usuario | `404 Not Found` |
+| Error interno retornado por `alerts-service` | Mismo código HTTP y payload `ProblemDetails` de `alerts-service` |
+| `alerts-service` caído o inaccesible | `503 Service Unavailable` |
+| Timeout (`> ALERTS_TIMEOUT_MS`, por defecto `5000 ms`) | `504 Gateway Timeout` |
+
 
 
 

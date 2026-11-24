@@ -5,6 +5,7 @@ import { SignJWT } from 'jose';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { AlertsService } from './../src/alerts/alerts.service';
 import { AuthService } from './../src/auth/auth.service';
 import { CatalogoService } from './../src/catalogo/catalogo.service';
 import { ChatService } from './../src/chat/chat.service';
@@ -48,6 +49,10 @@ describe('Auth & Gateway Security (e2e)', () => {
   let mockCatalogoService: {
     listarComponentes: jest.Mock<any>;
   };
+  let mockAlertsService: {
+    listAlerts: jest.Mock<any>;
+    markAsRead: jest.Mock<any>;
+  };
 
   const signToken = async (
     payload: Record<string, unknown>,
@@ -89,6 +94,10 @@ describe('Auth & Gateway Security (e2e)', () => {
     mockCatalogoService = {
       listarComponentes: jest.fn(),
     };
+    mockAlertsService = {
+      listAlerts: jest.fn(),
+      markAsRead: jest.fn(),
+    };
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -99,6 +108,8 @@ describe('Auth & Gateway Security (e2e)', () => {
       .useValue(mockChatService)
       .overrideProvider(CatalogoService)
       .useValue(mockCatalogoService)
+      .overrideProvider(AlertsService)
+      .useValue(mockAlertsService)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -270,5 +281,51 @@ describe('Auth & Gateway Security (e2e)', () => {
       .get('/api/componentes')
       .set('Authorization', 'Bearer token.invalido.firma')
       .expect(401);
+  });
+
+  it('GET /api/alerts y PATCH /api/alerts/:id/read requieren JWT e ignoran query userId del cliente', async () => {
+    const alertId = '8f14e45f-ceea-4e8f-9d42-9c1f4b2a7c10';
+
+    await request(app.getHttpServer()).get('/api/alerts').expect(401);
+    await request(app.getHttpServer())
+      .patch(`/api/alerts/${alertId}/read`)
+      .expect(401);
+
+    expect(mockAlertsService.listAlerts).not.toHaveBeenCalled();
+    expect(mockAlertsService.markAsRead).not.toHaveBeenCalled();
+
+    const token = await signToken({ sub: 'u1', role: 'user' });
+    const mockAlerts = [
+      {
+        id: alertId,
+        buildId: 'b2',
+        buildName: 'PC Gamer 1440p',
+        porcentajeUso: 101,
+        mensaje: 'Alerta',
+        sugerencia: 'Sugerencia',
+        leida: false,
+        creadaEn: '2026-11-17T20:00:01+00:00',
+      },
+    ];
+    mockAlertsService.listAlerts.mockResolvedValue(mockAlerts);
+
+    const listRes = await request(app.getHttpServer())
+      .get('/api/alerts?userId=otro')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(mockAlertsService.listAlerts).toHaveBeenCalledWith('u1');
+    expect(listRes.body).toEqual(mockAlerts);
+
+    const readAlert = { ...mockAlerts[0], leida: true };
+    mockAlertsService.markAsRead.mockResolvedValue(readAlert);
+
+    const patchRes = await request(app.getHttpServer())
+      .patch(`/api/alerts/${alertId}/read`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(mockAlertsService.markAsRead).toHaveBeenCalledWith(alertId, 'u1');
+    expect(patchRes.body).toEqual(readAlert);
   });
 });
