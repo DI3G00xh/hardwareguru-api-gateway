@@ -13,6 +13,8 @@ interface RequestWithUser {
   user?: {
     id?: string;
     sub?: string;
+    role?: string;
+    tenantId?: string;
   };
   headers?: Record<string, string | string[] | undefined>;
 }
@@ -35,6 +37,33 @@ function resolveUserId(dto: ChatDto, req?: RequestWithUser): string | undefined 
   return undefined;
 }
 
+function resolveIdentityMetadata(
+  req?: RequestWithUser,
+): { role?: string; tenantId?: string } | undefined {
+  const headerRole = req?.headers?.['x-user-role'];
+  const role =
+    req?.user?.role ??
+    (typeof headerRole === 'string' && headerRole.trim()
+      ? headerRole.trim()
+      : undefined);
+
+  const headerTenant = req?.headers?.['x-tenant-id'];
+  const tenantId =
+    req?.user?.tenantId ??
+    (typeof headerTenant === 'string' && headerTenant.trim()
+      ? headerTenant.trim()
+      : undefined);
+
+  if (!role && !tenantId) {
+    return undefined;
+  }
+
+  return {
+    ...(role ? { role } : {}),
+    ...(tenantId ? { tenantId } : {}),
+  };
+}
+
 @Controller('chat')
 export class ChatController {
   constructor(private readonly chatService: ChatService) { }
@@ -42,6 +71,10 @@ export class ChatController {
   @Post()
   @HttpCode(HttpStatus.OK)
   async enviarMensaje(@Body() dto: ChatDto, @Req() req?: RequestWithUser) {
-    return this.chatService.enviarMensaje(dto, resolveUserId(dto, req));
+    const userId = resolveUserId(dto, req);
+    const identity = resolveIdentityMetadata(req);
+    return identity
+      ? this.chatService.enviarMensaje(dto, userId, identity)
+      : this.chatService.enviarMensaje(dto, userId);
   }
 }

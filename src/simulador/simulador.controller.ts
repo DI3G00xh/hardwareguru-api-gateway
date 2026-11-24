@@ -6,6 +6,7 @@ import {
   Post,
   Req,
 } from '@nestjs/common';
+import { OptionalAuth } from '../auth/decorators/auth.decorators';
 import { GuardarBuildDto, SimularDto } from './dto/simular.dto';
 import { SimuladorService } from './simulador.service';
 
@@ -33,12 +34,14 @@ function extractAuthenticatedUserId(req?: RequestWithUser): string | undefined {
 export class SimuladorController {
   constructor(private readonly simuladorService: SimuladorService) {}
 
+  @OptionalAuth()
   @Post('calcular')
   @HttpCode(HttpStatus.OK)
   async calcular(@Body() dto: SimularDto, @Req() req?: RequestWithUser) {
     return this.simuladorService.simular(dto, extractAuthenticatedUserId(req));
   }
 
+  @OptionalAuth()
   @Post()
   @HttpCode(HttpStatus.OK)
   async simular(@Body() dto: SimularDto, @Req() req?: RequestWithUser) {
@@ -57,6 +60,7 @@ export class SimuladorController {
   }
 }
 
+@OptionalAuth()
 @Controller('simulaciones')
 export class SimulacionesController {
   constructor(private readonly simuladorService: SimuladorService) {}
@@ -68,6 +72,7 @@ export class SimulacionesController {
   }
 }
 
+@OptionalAuth()
 @Controller('simular')
 export class SimularController {
   constructor(private readonly simuladorService: SimuladorService) {}

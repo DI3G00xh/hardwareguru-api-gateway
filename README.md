@@ -17,24 +17,25 @@ API Gateway y Backend-For-Frontend (BFF) desarrollado con **NestJS** para el eco
                                                   v
 +---------------------------------------------------------------------------------------------------+
 |                                     API Gateway / BFF (NestJS)                                    |
-|  - Deserialización nativa de JSON (specs y benchmarks)                                            |
+|  - Seguridad perimetral (APP_GUARD): JWT HS256 / JWKS (caché única), exp, roles/scopes y API Keys |
+|  - Sanitización y propagación de identidad (x-user-id, x-user-role, x-tenant-id)                  |
 |  - Validación de DTOs (ValidationPipe + class-validator)                                          |
-|  - Normalización camelCase <-> snake_case                                                         |
+|  - Deserialización nativa de JSON (specs y benchmarks) y normalización camelCase <-> snake_case   |
 |  - Orquestación IDs -> métricas vía Catálogo antes de simular                                     |
-|  - Proxy HTTP hacia MCP Server con inyección de x-user-id y timeout amplio (45s)                  |
-|  - Deadlines gRPC (3000 ms) y mapeo de errores (400, 401, 404, 501-504)                           |
+|  - Proxy HTTP hacia Auth Service (:4000) y MCP Server (:3001, timeout 45s)                        |
+|  - Deadlines gRPC (3000 ms) y mapeo de errores (400, 401, 403, 404, 501-504)                      |
 |  - Telemetría y tracing con NestJS Observe                                                        |
-+-------------------+-----------------------------+-------------------------------+-----------------+
-                    |                             |                               |
-                    | gRPC (:50051)               | gRPC (:9090)                  | HTTP (:3001)
-                    | hardware.proto              | simulator.proto               | POST /chat + x-user-id
-                    v                             v                               v
-+----------------------------------+  +----------------------------------+  +----------------------------------+
-|  Microservicio Catálogo (Go)     |  |  Microservicio Simulador (Java)  |  |  MCP Server / IA (Node.js)       |
-|  - Servicio: CatalogoService     |  |  - Servicio: SimulatorService    |  |  - Gemini + Tool Calling gRPC    |
-|  - Base de Datos: PostgreSQL     |  |  - Base de Datos: PostgreSQL     |  |  - Llama a Simulador (:9090)     |
-|  - Reglas de compatibilidad      |  |  - Consumo, cuello de botella    |  |  - Redacción de respuestas       |
-+----------------------------------+  +----------------------------------+  +----------------------------------+
++--------+--------------------------+-----------------------------+-------------------------------+
+         |                          |                             |                               |
+         | HTTP (:4000)             | gRPC (:50051)               | gRPC (:9090)                  | HTTP (:3001)
+         | /api/auth/* + x-user-id  | hardware.proto              | simulator.proto               | POST /chat + x-user-id
+         v                          v                             v                               v
++--------------------------------+  +--------------------------+  +----------------------------+  +--------------------------+
+|  Auth Service (Node.js)        |  |  Catálogo (Go)           |  |  Simulador (Java)          |  |  MCP Server / IA (Node)  |
+|  - Registro, Login, Perfil     |  |  - CatalogoService       |  |  - SimulatorService        |  |  - Gemini + Tool Calling |
+|  - Emisión JWT HS256 (4h)      |  |  - PostgreSQL            |  |  - PostgreSQL              |  |  - Llama a Simulador     |
+|  - PostgreSQL (users)          |  |  - Compatibilidad        |  |  - Consumo / Bottleneck    |  |  - Respuestas IA         |
++--------------------------------+  +--------------------------+  +----------------------------+  +--------------------------+
 ```
 
 ---
@@ -44,6 +45,27 @@ API Gateway y Backend-For-Frontend (BFF) desarrollado con **NestJS** para el eco
 ```text
 hardwareguru-api-gateway/
 ├── src/
+│   ├── auth/                           # Módulo de Autenticación y Seguridad Gateway (Integrado)
+│   │   ├── decorators/
+│   │   │   └── auth.decorators.ts      # @Public, @OptionalAuth, @Roles, @Scopes, @RequireApiKey
+│   │   ├── dto/
+│   │   │   └── auth.dto.ts             # DTOs de validación (RegisterDto, LoginDto, UpdateProfileDto)
+│   │   ├── guards/
+│   │   │   ├── gateway-auth.guard.ts   # APP_GUARD global: JWT/JWKS, API Keys, roles/scopes, headers
+│   │   │   └── gateway-auth.guard.spec.ts
+│   │   ├── interfaces/
+│   │   │   └── auth.interface.ts       # Contratos de usuario autenticado, API keys y respuestas
+│   │   ├── services/
+│   │   │   ├── api-key.service.ts      # Validación en tiempo constante de API Keys activas
+│   │   │   ├── api-key.service.spec.ts
+│   │   │   ├── token-verifier.service.ts # Verificación local HS256 / JWKS (caché única) y exp
+│   │   │   └── token-verifier.service.spec.ts
+│   │   ├── auth.constants.ts           # Constantes de headers y metadata keys
+│   │   ├── auth.controller.ts          # Proxy REST (/api/auth/register, /login, /me, /profile)
+│   │   ├── auth.service.ts             # Cliente HTTP hacia auth-service y mapeo de errores
+│   │   ├── auth.module.ts              # Configuración AuthModule
+│   │   ├── auth.controller.spec.ts
+│   │   └── auth.service.spec.ts
 │   ├── catalogo/                       # Módulo del Microservicio de Catálogo (Integrado)
 │   │   ├── dto/
 │   │   │   └── build.dto.ts            # DTO de validación para verificación de compatibilidad
@@ -101,6 +123,7 @@ hardwareguru-api-gateway/
 ### Requisitos Previos
 - **Node.js**: v20.19+ o v22.12+ (soporte nativo ESM)
 - **npm**: v10+
+- **Microservicio Auth Service en ejecución**: Servicio Node.js levantado en el puerto `4000` (`AUTH_SERVICE_URL=http://localhost:4000`) compartiendo el mismo `JWT_SECRET`.
 - **Microservicio de Catálogo en ejecución**: Servicio Go levantado en el puerto `50051` (vía `docker compose up -d` en `hardwareguru-catalogo`).
 - **Microservicio Simulador en ejecución**: Servicio Spring Boot gRPC levantado en el puerto `9090` (`hardwareguru-simulador` / `SimulatorService`).
 - **Microservicio MCP Server en ejecución**: Servicio Node.js (`Taller2-Arquitectura-2-MCP-Server`) levantado en `MCP_SERVICE_URL` (por defecto `http://localhost:3001` en local para no colisionar con el puerto `3000` del Gateway).
@@ -116,6 +139,18 @@ Configuración requerida en `.env`:
 ```env
 PORT=3000
 NODE_ENV=development
+
+# Auth Service y Seguridad API Gateway
+AUTH_SERVICE_URL=http://localhost:4000
+AUTH_TIMEOUT_MS=5000
+JWT_SECRET=super_secreto_hardwareguru_2026
+# Opcional: validación asimétrica vía JWKS (descarga claves públicas una sola vez)
+# AUTH_JWKS_URL=http://localhost:4000/.well-known/jwks.json
+# JWT_ISSUER=hardwareguru-auth
+# JWT_AUDIENCE=hardwareguru-api
+# Opcional: API Keys (JSON array o lista separada por comas key:name:active)
+# API_KEYS=[{"key":"hg_dev_key_123","name":"frontend-web","active":true,"role":"service","tenantId":"hardwareguru"}]
+# REQUIRE_API_KEY=false
 
 # Clientes gRPC
 CATALOGO_GRPC_URL=localhost:50051
@@ -431,11 +466,12 @@ Endpoint BFF adaptado al contrato del cliente React (`hardwareguru-frontend`). S
 
 ### 5.3. Guardar Build (`POST /api/simulador/builds`)
 
-Expone el RPC `GuardarBuild` definido en `simulator.proto`.
+Expone el RPC `GuardarBuild` definido en `simulator.proto`. **Requiere autenticación (`Authorization: Bearer <token>`).**
 
 - **Método:** `POST`
 - **Ruta:** `/api/simulador/builds`
-- **Estado actual en el microservicio Simulador:** El RPC `GuardarBuild` está declarado en `simulator.proto` pero pendiente de implementación en `SimulatorServiceImpl`, por lo que al invocarlo actualmente el Gateway responderá `501 Not Implemented` (mapeado desde gRPC `UNIMPLEMENTED`).
+- **Acceso:** Protegido (`401 Unauthorized` si falta el token o es inválido).
+- **Estado actual en el microservicio Simulador:** El RPC `GuardarBuild` está declarado en `simulator.proto` pero pendiente de implementación en `SimulatorServiceImpl`, por lo que al invocarlo autenticado actualmente el Gateway responderá `501 Not Implemented` (mapeado desde gRPC `UNIMPLEMENTED`).
 
 ---
 
@@ -463,28 +499,20 @@ El módulo `ChatModule` reenvía las consultas de lenguaje natural por **HTTP** 
 
 - **Método:** `POST`
 - **Ruta:** `/api/chat`
-- **Identificación de usuario (`x-user-id`):**
-  - El Gateway exige identificar al usuario para reenviar el header `x-user-id` hacia el MCP Server.
-  - Cuando existe sesión autenticada (`req.user`), el Gateway **sobrescribe** cualquier `x-user-id` o `userId` enviado por el cliente.
-  - Mientras no haya guard JWT activo en desarrollo, toma `x-user-id` (header) o `userId` (body); si no se envía ninguno, responde `401 Unauthorized`.
+- **Acceso:** **Protegido** (requiere `Authorization: Bearer <token>` válido; si falta o es inválido/expirado, el Gateway corta la petición con `401 Unauthorized` antes de llamar al MCP Server).
+- **Identificación de usuario (`x-user-id`, `x-user-role`, `x-tenant-id`):**
+  - El Gateway valida el JWT localmente, **descarta** cualquier `x-user-id` o `userId` falsificado por el cliente e inyecta hacia el MCP Server las cabeceras limpias extraídas del token (`x-user-id`, `x-user-role` y `x-tenant-id` si aplica).
 - **Formatos de Body admitidos:**
   1. **Directo (contrato MCP):** `{ "prompt": "..." }`
   2. **Frontend React:** `{ "mensaje": "...", "historial": [...] }` (el Gateway adapta automáticamente el historial reciente y el mensaje en un único `prompt`).
 
-#### Ejemplo de Solicitud Directa:
+#### Ejemplo de Solicitud desde el Frontend React:
 ```http
 POST /api/chat HTTP/1.1
 Host: localhost:3000
 Content-Type: application/json
-x-user-id: user-123
+Authorization: Bearer <JWT>
 
-{
-  "prompt": "Simula el rendimiento para un PC 1080p con fuente de 500W. La CPU consume 65W (score 5000) y la GPU consume 200W (score 20000)."
-}
-```
-
-#### Ejemplo de Solicitud desde el Frontend React:
-```json
 {
   "mensaje": "¿Me alcanza una fuente de 550W para esta build?",
   "historial": [
@@ -508,13 +536,199 @@ x-user-id: user-123
 | :--- | :--- |
 | `200 OK` | `200 OK` (`{ "respuesta": "..." }`) |
 | `prompt` y `mensaje` ausentes o vacíos / `400` del MCP | `400 Bad Request` |
-| Falta identificación de usuario (`x-user-id`) / `401` del MCP | `401 Unauthorized` |
+| Sin token, token inválido/expirado o `401` del MCP | `401 Unauthorized` |
 | Timeout (`> MCP_TIMEOUT_MS`, por defecto `45000 ms`) | `504 Gateway Timeout` |
 | MCP Server caído (`ECONNREFUSED`) o error interno `5xx` del MCP | `502 Bad Gateway` |
 
 > **Nota operativa:** El MCP Server no expone `GET /health` en su versión actual (si usas balanceador, verifica TCP en el puerto configurado en `MCP_SERVICE_URL`) y, si corre en contenedores separados del Simulador, parametriza su dirección gRPC para no depender de `localhost:9090`.
 
 ---
+
+## 7. Contratos de Integración para el Frontend (Módulo Auth & Seguridad)
+
+El módulo `AuthModule` actúa como proxy seguro hacia el **Auth Service** (`AUTH_SERVICE_URL`, por defecto `http://localhost:4000`) y habilita el guard global `GatewayAuthGuard` sobre todo el API Gateway.
+
+### Reglas de Seguridad para el Frontend
+
+1. **Autenticación con Bearer JWT:**
+   - Tras hacer login en `POST /api/auth/login`, el Frontend debe almacenar el `token` y enviarlo en la cabecera `Authorization: Bearer <token>` en todas las rutas protegidas.
+   - Si el Frontend envía un token inválido o expirado en **cualquier** ruta (incluso rutas públicas de Catálogo/Simulador con sesión opcional), el Gateway responderá `401 Unauthorized` de inmediato.
+2. **No enviar `x-user-id` manualmente:**
+   - El Gateway **sanitiza y sobrescribe** `x-user-id`, `x-user-role` y `x-tenant-id` en todas las peticiones entrantes; la identidad siempre proviene del JWT verificado.
+3. **API Keys (`x-api-key`, opcional):**
+   - Si `REQUIRE_API_KEY=true` en el Gateway o si el Frontend envía `x-api-key`, esta se valida contra `API_KEYS` (rechazando con `401 Unauthorized` si no existe o está inactiva).
+4. **Rutas internas bloqueadas:**
+   - `GET /api/auth/users/:id` es de uso exclusivo entre microservicios internos y **no está expuesta** en el Gateway (`404 Not Found`).
+
+### Matriz de Acceso por Endpoint
+
+| Endpoint | Acceso | Comportamiento sin token |
+| :--- | :--- | :--- |
+| `POST /api/auth/register` | **Público** | Permitido |
+| `POST /api/auth/login` | **Público** | Permitido |
+| `GET /api/auth/me` | **Protegido (JWT)** | `401 Unauthorized` |
+| `PUT /api/auth/profile` | **Protegido (JWT)** | `401 Unauthorized` |
+| `GET /api/componentes`, `GET /api/componentes/:id`, `POST /api/componentes/compatibilidad`, `POST /api/compatibilidad` | **Opcional (Invitado o JWT)** | Permitido (si envía token inválido → `401`) |
+| `POST /api/simular`, `POST /api/simulador`, `POST /api/simulador/calcular`, `POST /api/simulaciones` | **Opcional (Invitado o JWT)** | Modo invitado `"0"` (si envía token válido, asocia `userId`; si es inválido → `401`) |
+| `POST /api/simulador/builds` | **Protegido (JWT)** | `401 Unauthorized` |
+| `POST /api/chat` | **Protegido (JWT)** | `401 Unauthorized` |
+
+---
+
+### 7.1. Registrar Usuario (`POST /api/auth/register`)
+
+- **Método:** `POST`
+- **Ruta:** `/api/auth/register`
+- **Acceso:** Público
+
+#### Body (`application/json`):
+| Campo | Tipo | Requerido | Validación en Gateway |
+| :--- | :--- | :---: | :--- |
+| `nombre` | string | Sí | No vacío |
+| `email` | string | Sí | Formato email válido |
+| `password` | string | Sí | Mínimo `6` caracteres |
+
+#### Ejemplo de Solicitud:
+```http
+POST /api/auth/register HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+
+{
+  "nombre": "User",
+  "email": "user@hardwareguru.cl",
+  "password": "password123"
+}
+```
+
+#### Respuesta Exitosa (`201 Created`):
+```json
+{
+  "mensaje": "Usuario registrado exitosamente",
+  "user": {
+    "id": 2,
+    "nombre": "User",
+    "email": "user@hardwareguru.cl"
+  }
+}
+```
+
+---
+
+### 7.2. Iniciar Sesión (`POST /api/auth/login`)
+
+- **Método:** `POST`
+- **Ruta:** `/api/auth/login`
+- **Acceso:** Público
+
+#### Body (`application/json`):
+| Campo | Tipo | Requerido | Validación en Gateway |
+| :--- | :--- | :---: | :--- |
+| `email` | string | Sí | Formato email válido |
+| `password` | string | Sí | No vacío |
+
+#### Ejemplo de Solicitud:
+```http
+POST /api/auth/login HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+
+{
+  "email": "user@hardwareguru.cl",
+  "password": "password123"
+}
+```
+
+#### Respuesta Exitosa (`200 OK`):
+```json
+{
+  "mensaje": "Login exitoso",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": 2,
+    "nombre": "User",
+    "email": "user@hardwareguru.cl"
+  }
+}
+```
+
+---
+
+### 7.3. Obtener Perfil del Usuario Autenticado (`GET /api/auth/me`)
+
+- **Método:** `GET`
+- **Ruta:** `/api/auth/me`
+- **Acceso:** Protegido (`Authorization: Bearer <token>`)
+
+#### Ejemplo de Solicitud:
+```http
+GET /api/auth/me HTTP/1.1
+Host: localhost:3000
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+#### Respuesta Exitosa (`200 OK`):
+```json
+{
+  "id": 2,
+  "nombre": "User",
+  "email": "user@hardwareguru.cl"
+}
+```
+
+---
+
+### 7.4. Actualizar Perfil (`PUT /api/auth/profile`)
+
+- **Método:** `PUT`
+- **Ruta:** `/api/auth/profile`
+- **Acceso:** Protegido (`Authorization: Bearer <token>`)
+
+#### Body (`application/json`):
+| Campo | Tipo | Requerido | Validación en Gateway |
+| :--- | :--- | :---: | :--- |
+| `nombre` | string | No | Si se envía, no puede estar vacío |
+| `newPassword` | string | No | Si se envía, mínimo `6` caracteres |
+
+#### Ejemplo de Solicitud:
+```http
+PUT /api/auth/profile HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+{
+  "nombre": "User Guru",
+  "newPassword": "nuevaPassword123"
+}
+```
+
+#### Respuesta Exitosa (`200 OK`):
+```json
+{
+  "mensaje": "Perfil actualizado correctamente",
+  "usuario": {
+    "id": 2,
+    "nombre": "User Guru",
+    "email": "user@hardwareguru.cl"
+  }
+}
+```
+
+> **Nota para el Frontend:** `POST /api/auth/register` y `POST /api/auth/login` devuelven el objeto del usuario bajo la clave `user`, mientras que `PUT /api/auth/profile` lo devuelve bajo la clave `usuario` (contrato nativo de `auth-service`).
+
+---
+
+### 7.5. Mapeo de Errores HTTP (Auth & Seguridad Gateway)
+
+| Condición / Respuesta | Respuesta HTTP en Gateway |
+| :--- | :--- |
+| DTO inválido (`email`, `password < 6`, campos desconocidos) | `400 Bad Request` |
+| Sin token, formato `Bearer` inválido, firma inválida, token expirado (`exp`), o `x-api-key` inválida/inactiva | `401 Unauthorized` |
+| Token válido sin el `role` o `scope` requerido por la ruta | `403 Forbidden` |
+| Error de negocio retornado por `auth-service` (`400`, `401`, `404`, `409`, etc.) | Mismo código HTTP y payload JSON de `auth-service` |
+| Auth Service caído o inaccesible | `503 Service Unavailable` |
+| Timeout (`> AUTH_TIMEOUT_MS`, por defecto `5000 ms`) | `504 Gateway Timeout` |
 
 
 

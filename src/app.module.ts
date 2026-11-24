@@ -1,8 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
 import { createObserveModule } from '@nestjs/observe';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
+import { GatewayAuthGuard } from './auth/guards/gateway-auth.guard';
 import { CatalogoModule } from './catalogo/catalogo.module';
 import { SimuladorModule } from './simulador/simulador.module';
 import { KafkaModule } from './kafka/kafka.module';
@@ -19,6 +22,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
       appSecret: process.env.OBSERVE_APP_SECRET ?? 'YOUR_APP_SECRET',
       serviceId: 'hardwareguru-api-gateway',
     }),
+    AuthModule,
     CatalogoModule,
     SimuladorModule,
     KafkaModule,
@@ -26,6 +30,12 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     ChatModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: GatewayAuthGuard,
+    },
+  ],
 })
 export class AppModule {}

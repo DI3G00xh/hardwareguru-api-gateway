@@ -42,6 +42,7 @@ export class ChatService {
   async enviarMensaje(
     dto: ChatDto,
     userId?: string,
+    identity?: { role?: string; tenantId?: string },
   ): Promise<McpChatResponse> {
     const resolvedUserId = userId?.trim();
     if (!resolvedUserId) {
@@ -55,6 +56,17 @@ export class ChatService {
       throw new BadRequestException('El prompt es requerido');
     }
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-user-id': resolvedUserId,
+    };
+    if (identity?.role) {
+      headers['x-user-role'] = identity.role;
+    }
+    if (identity?.tenantId) {
+      headers['x-tenant-id'] = identity.tenantId;
+    }
+
     try {
       const response = await firstValueFrom(
         this.httpService
@@ -62,10 +74,7 @@ export class ChatService {
             `${this.mcpServiceUrl}/chat`,
             { prompt },
             {
-              headers: {
-                'Content-Type': 'application/json',
-                'x-user-id': resolvedUserId,
-              },
+              headers,
               timeout: this.timeoutMs,
             },
           )
