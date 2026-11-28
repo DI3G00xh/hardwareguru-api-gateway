@@ -1,0 +1,13 @@
+node_modules
+dist
+coverage
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+test
+*.log
+tsconfig.build.tsbuildinfo
+README.md
+AGENTS.md

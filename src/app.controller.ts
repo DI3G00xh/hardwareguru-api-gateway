@@ -11,4 +11,13 @@ export class AppController {
   getHello(): string {
     return this.appService.getHello();
   }
+
+  @Public()
+  @Get('health')
+  getHealth(): { status: string; service: string } {
+    return {
+      status: 'ok',
+      service: 'hardwareguru-api-gateway',
+    };
+  }
 }

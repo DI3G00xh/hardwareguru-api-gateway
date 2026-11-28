@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -20,18 +21,23 @@ const getProtoPath = () => {
 
 @Module({
   imports: [
-    ClientsModule.register([
+    ClientsModule.registerAsync([
       {
         name: 'CATALOGO_PACKAGE',
-        transport: Transport.GRPC,
-        options: {
-          package: 'hardware',
-          protoPath: getProtoPath(),
-          url: process.env.CATALOGO_GRPC_URL || 'localhost:50051',
-          loader: {
-            keepCase: true,
+        inject: [ConfigService],
+        useFactory: (configService: ConfigService) => ({
+          transport: Transport.GRPC,
+          options: {
+            package: 'hardware',
+            protoPath: getProtoPath(),
+            url:
+              configService.get<string>('CATALOGO_GRPC_URL') ||
+              'localhost:50051',
+            loader: {
+              keepCase: true,
+            },
           },
-        },
+        }),
       },
     ]),
   ],
@@ -39,4 +45,4 @@ const getProtoPath = () => {
   providers: [CatalogoService],
   exports: [CatalogoService],
 })
-export class CatalogoModule { }
+export class CatalogoModule {}
